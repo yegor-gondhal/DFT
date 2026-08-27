@@ -37,8 +37,8 @@ def gaussian(pos, center, alpha, powers):
         xp.exp(-alpha*r2)
     )
 
-atoms = ["11", "13", "2", "20", "17"]
-centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0]]
+atoms = ["1", "2"]
+centers = [[0, 0, 0], [1, 0, 0]]
 
 exponents_total = []
 coefficients_total = []
@@ -93,7 +93,39 @@ def normal(alpha, powers):
     term = xp.sqrt(term)
     return term * xp.power((2*alpha)/xp.pi, 0.75)
 
-def overlap_1d(alpha, beta, cen_a, cen_b, p1, p2):
+def overlap_symmetric(alpha, cen_a, p1):
+    p = xp.add.outer(alpha, alpha)
+    P = xp.add.outer(alpha*cen_a, alpha*cen_a)/p
+
+    a = P - cen_a[:, None]
+    max1 = int(xp.max(p1))
+    idxs_a = xp.arange(max1+1)
+    idxs_a = xp.broadcast_to(idxs_a[None, None, :], (p.shape[0], p.shape[1], idxs_a.shape[0]))
+    mask_a = (idxs_a <= p1[:, None, None])
+    idx1, idx2, idx3 = xp.where(mask_a)
+    u_plus_a = xp.zeros(mask_a.shape)
+    u_plus_a[idx1, idx2, idx3] = mspecial.binom(p1[idx1], idxs_a[idx1, idx2, idx3]) * xp.power(a[idx1, idx2], p1[idx1] - idxs_a[idx1, idx2, idx3])
+
+    p = xp.add.outer(alpha, alpha)
+    outer_coeff = xp.subtract.outer(cen_a, cen_a, dtype=xp.float64)
+    outer_coeff = xp.square(outer_coeff)
+    outer_coeff *= xp.outer(alpha, alpha)
+    outer_coeff /= -p
+    outer_coeff = xp.exp(outer_coeff)
+
+    inner_coeff = xp.square(u_plus_a)
+    u_matrix = 2*idxs_a
+    int_matrix = xp.zeros_like(u_matrix, dtype=xp.float64)
+    idx1, idx2, idx3 = xp.where(u_matrix % 2.0 == 0.0)
+    int_matrix[idx1, idx2, idx3] = double_factorial(u_matrix[idx1, idx2, idx3] - 1)
+    int_matrix[idx1, idx2, idx3] /= xp.power(2, u_matrix[idx1, idx2, idx3] / 2)
+    int_matrix[idx1, idx2, idx3] *= xp.sqrt(xp.pi)
+    int_matrix[idx1, idx2, idx3] *= xp.power(p[idx1, idx2], -0.5 * (u_matrix[idx1, idx2, idx3] + 1))
+    int_matrix *= inner_coeff
+    int_matrix = xp.sum(int_matrix, axis=-1)
+    return int_matrix*outer_coeff
+
+def overlap_asymmetric(alpha, beta, cen_a, cen_b, p1, p2):
     p = xp.add.outer(alpha, beta)
     P = xp.add.outer(alpha*cen_a, beta*cen_b)/p
 
@@ -133,6 +165,14 @@ def overlap_1d(alpha, beta, cen_a, cen_b, p1, p2):
     int_matrix = xp.sum(int_matrix, axis=-1)
     return int_matrix*outer_coeff
 
+def T_raw(exp, cen, pow, prev_overlap):
+    result = -2*exp[:, None]*(2*pow[:, None] + 1)*prev_overlap
+    result += 4*xp.square(exp[:, None])*overlap_asymmetric(exp, exp, cen, cen, pow, pow+2)
+    if xp.any(pow >= 2):
+        idxs = xp.where(pow >= 2)
+        result[:, idxs] += pow[idxs, None]*(pow[idxs, None] - 1)*overlap_asymmetric(exp[idxs], exp[idxs], cen[idxs], cen[idxs], pow[idxs], pow[idxs]-2)
+    return result
+
 print("Max exponent: ", xp.max(exponents_total))
 print("Min exponent: ", xp.min(exponents_total))
 print("Max position: ", xp.max(centers_total))
@@ -144,20 +184,36 @@ normals = normal(exponents_total, powers)
 normals = xp.outer(normals, normals)
 mult_coeffs = xp.outer(coefficients_total, coefficients_total)
 
-overlap1 = overlap_1d(exponents_total, exponents_total, centers_total[:, 0], centers_total[:, 0], powers[:, 0], powers[:, 0])
-overlap2 = overlap_1d(exponents_total, exponents_total, centers_total[:, 1], centers_total[:, 1], powers[:, 1], powers[:, 1])
-overlap3 = overlap_1d(exponents_total, exponents_total, centers_total[:, 2], centers_total[:, 2], powers[:, 2], powers[:, 2])
-overlap = normals*mult_coeffs*overlap1*overlap2*overlap3
-overlap = overlap.reshape(exponents_total.shape[0], exp_shape[0], exp_shape[1])
-overlap = xp.sum(overlap, axis=-1)
-overlap = overlap.T
-overlap = overlap.reshape(-1, exp_shape[0], exp_shape[1])
-overlap = xp.sum(overlap, axis=-1)
-overlap_true = overlap.T
+overlapx = overlap_symmetric(exponents_total, centers_total[:, 0], powers[:, 0])
+overlapy = overlap_symmetric(exponents_total, centers_total[:, 1], powers[:, 1])
+overlapz = overlap_symmetric(exponents_total, centers_total[:, 2], powers[:, 2])
 
-print("Condition Number: ", xp.linalg.cond(overlap_true))
-print(xp.max(xp.abs(overlap_true - overlap_true.T)))
-eigenvalues = xp.linalg.eigvalsh(overlap_true)
+T_x = T_raw(exponents_total, centers_total[:, 0], powers[:, 0], overlapx)
+T_y = T_raw(exponents_total, centers_total[:, 1], powers[:, 1], overlapy)
+T_z = T_raw(exponents_total, centers_total[:, 2], powers[:, 2], overlapz)
+
+overlaps = normals*mult_coeffs*overlapx*overlapy*overlapz
+overlaps = overlaps.reshape(exponents_total.shape[0], exp_shape[0], exp_shape[1])
+overlaps = xp.sum(overlaps, axis=-1)
+overlaps = overlaps.T
+overlaps = overlaps.reshape(-1, exp_shape[0], exp_shape[1])
+overlaps = xp.sum(overlaps, axis=-1)
+overlaps = overlaps.T
+
+
+T_matrix = -0.5*normals*mult_coeffs*(T_x + T_y + T_z)
+T_matrix = T_matrix.reshape(exponents_total.shape[0], exp_shape[0], exp_shape[1])
+T_matrix = xp.sum(T_matrix, axis=-1)
+T_matrix = T_matrix.T
+T_matrix = T_matrix.reshape(-1, exp_shape[0], exp_shape[1])
+T_matrix = xp.sum(T_matrix, axis=-1)
+T_matrix = T_matrix.T
+
+
+print("Condition Number: ", xp.linalg.cond(overlaps))
+print(xp.max(xp.abs(overlaps - overlaps.T)))
+eigenvalues = xp.linalg.eigvalsh(overlaps)
 print(eigenvalues)
-print(xp.diag(overlap_true), "\n")
+print(xp.diag(overlaps), "\n")
 
+print("T matrix test: ", T_matrix)
