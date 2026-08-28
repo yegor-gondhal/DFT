@@ -36,10 +36,12 @@ def gaussian(pos, center, alpha, powers):
         dz**powers[2] *
         xp.exp(-alpha*r2)
     )
-
+'''
+atoms = ["11", "20", "3", "16", "10", "12", "17"]
+centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [-1, 0, 0], [0, -1, 0]]
+'''
 atoms = ["1", "2"]
 centers = [[0, 0, 0], [1, 0, 0]]
-
 exponents_total = []
 coefficients_total = []
 centers_total = []
@@ -131,15 +133,14 @@ def overlap_asymmetric(alpha, beta, cen_a, cen_b, p1, p2):
 
     a = P - cen_a[:, None]
     b = P - cen_b[None, :]
-    max1 = int(xp.max(p1))
-    idxs_a = xp.arange(max1+1)
+    max = int(xp.maximum(xp.max(p1), xp.max(p2)))
+    idxs_a = xp.arange(max+1)
     idxs_a = xp.broadcast_to(idxs_a[None, None, :], (p.shape[0], p.shape[1], idxs_a.shape[0]))
     mask_a = (idxs_a <= p1[:, None, None])
     idx1, idx2, idx3 = xp.where(mask_a)
     u_plus_a = xp.zeros(mask_a.shape)
     u_plus_a[idx1, idx2, idx3] = mspecial.binom(p1[idx1], idxs_a[idx1, idx2, idx3]) * xp.power(a[idx1, idx2], p1[idx1] - idxs_a[idx1, idx2, idx3])
-    max1 = int(xp.max(p2))
-    idxs_b = xp.arange(max1 + 1)
+    idxs_b = xp.arange(max + 1)
     idxs_b = xp.broadcast_to(idxs_b[None, None, :], (p.shape[0], p.shape[1], idxs_b.shape[0]))
     mask_b = (idxs_b <= p2[None, :, None])
     idx1, idx2, idx3 = xp.where(mask_b)
@@ -166,8 +167,8 @@ def overlap_asymmetric(alpha, beta, cen_a, cen_b, p1, p2):
     return int_matrix*outer_coeff
 
 def T_raw(exp, cen, pow, prev_overlap):
-    result = -2*exp[:, None]*(2*pow[:, None] + 1)*prev_overlap
-    result += 4*xp.square(exp[:, None])*overlap_asymmetric(exp, exp, cen, cen, pow, pow+2)
+    result = -2*exp[None, :]*(2*pow[None, :] + 1)*prev_overlap
+    result += 4*xp.square(exp[None, :])*overlap_asymmetric(exp, exp, cen, cen, pow, pow+2)
     if xp.any(pow >= 2):
         idxs = xp.where(pow >= 2)
         result[:, idxs] += pow[idxs, None]*(pow[idxs, None] - 1)*overlap_asymmetric(exp[idxs], exp[idxs], cen[idxs], cen[idxs], pow[idxs], pow[idxs]-2)
