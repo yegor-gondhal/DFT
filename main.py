@@ -145,6 +145,51 @@ def T_raw(exp, cen, pow, prev_overlap):
         result[:, idxs] += pow[idxs][None, :]*(pow[idxs][None, :] - 1)*overlap(exp, exp[idxs], cen, cen[idxs], pow, pow[idxs]-2)
     return result
 
+def boys(m, t):
+    term = mspecial.gammainc(m + 0.5, t)*mspecial.gamma(m + 0.5)
+    term /= 2*xp.power(t, m + 0.5) + 1e-40
+    return term
+
+def R000(m, t, p):
+    return xp.power(-2*p, m)*boys(m, t)
+
+def R_t_plus_1(idxs, R_matrix, P_x, C_x):
+    return idxs[1]*R_matrix[idxs[0]+1, idxs[1]-1, idxs[2], idxs[3]] + (P_x - C_x)*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]]
+def R_u_plus_1(idxs, R_matrix, P_x, C_x):
+    return idxs[2]*R_matrix[idxs[0]+1, idxs[1], idxs[2]-1, idxs[3]] + (P_x - C_x)*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]]
+def R_v_plus_1(idxs, R_matrix, P_x, C_x):
+    return idxs[3]*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]-1] + (P_x - C_x)*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]]
+
+def calc_E_1d(exp, cen, pow):
+    p = xp.add.outer(exp, exp)
+    q = xp.outer(exp, exp)/p
+    cen_sep = xp.subtract.outer(cen, cen)
+
+    prefactor = xp.square(cen_sep)
+    prefactor *= -q
+    prefactor = xp.exp(prefactor)
+
+    s = pow.shape[0]
+    pow_pairs = xp.stack((xp.broadcast_to(pow[:, None], (s, s)), xp.broadcast_to(pow[:, None], (s, s))), axis=-1)
+    pow_iter_pairs = xp.zeros_like(pow_pairs)
+    t_max = xp.add.outer(pow, pow)
+    max_loop = int(xp.max(t_max))
+
+    added_E_coeffs = []
+    added_E_idxs = []
+    identifier = []
+
+    for i in range(max_loop):
+        mask = (t_max > i)
+        i_mask = (pow_iter_pairs[:, :, 0] == pow_pairs[:, :, 0])
+        j_mask = (pow_iter_pairs[:, :, 1] == pow_pairs[:, :, 1])
+        i_mask &= mask
+        j_mask &= mask
+        j_mask &= ~i_mask
+
+
+
+
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
