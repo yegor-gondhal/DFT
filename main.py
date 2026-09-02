@@ -226,6 +226,27 @@ def calc_E_1d(exp, cen, pow):
                 store_E[super_i_idx] = i_term
                 store_E[super_j_idx] = j_term
 
+                added_E_coeffs.append(store_E)
+                added_E_idxs.append(idxs)
+
+    base_idxs = xp.argwhere(xp.ones_like(t_max) == 1)
+    seen = added_E_idxs[-1]
+    size = len(added_E_idxs)
+
+    for i in range(size-2):
+        super_idx = xp.where((added_E_idxs[size-i-2] == seen).all(axis=1))[0]
+        added_E_coeffs[size-i-2] = xp.delete(added_E_coeffs[size-i-2], super_idx)
+        added_E_idxs[size-i-2] = xp.delete(added_E_idxs[size-i-2], super_idx)
+        seen = xp.concatenate((seen, added_E_idxs[size-i-2]))
+
+    super_idx = xp.where((base_idxs == seen).all(axis=1))[0]
+    base_idx = xp.delete(base_idxs, super_idx)
+
+    added_E_coeffs.insert(0, prefactor[base_idx[:, 0], base_idx[:, 1]])
+    added_E_idxs.insert(0, base_idx)
+
+    return added_E_coeffs, added_E_idxs
+
 
 
 print("Max exponent: ", xp.max(exp))
@@ -268,3 +289,4 @@ T_matrix = T_matrix.T
 
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
+
