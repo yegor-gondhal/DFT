@@ -160,12 +160,18 @@ def R_u_plus_1(idxs, R_matrix, P_x, C_x):
 def R_v_plus_1(idxs, R_matrix, P_x, C_x):
     return idxs[3]*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]-1] + (P_x - C_x)*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]]
 
+def get_idx(arr1, arr2):
+    mask1 = (arr1[:, 0][:, None] == arr2[:, 0][None, :])
+    mask2 = (arr1[:, 1][:, None] == arr2[:, 1][None, :])
+    mask = mask1 & mask2
+    return xp.argwhere(mask)[:, 1]
+
 def calc_E_1d(exp, cen, pow):
     alpha = xp.broadcast_to(exp[:, None], (exp.shape[0], exp.shape[0]))
     beta = xp.broadcast_to(exp[None, :], (exp.shape[0], exp.shape[0]))
     p = alpha + beta
     q = xp.outer(exp, exp)/p
-    cen_sep = xp.subtract.outer(cen, cen)
+    cen_sep = xp.subtract.outer(cen, cen).astype(xp.float64)
 
     prefactor = xp.square(cen_sep)
     prefactor *= -q
@@ -189,18 +195,18 @@ def calc_E_1d(exp, cen, pow):
         i_idxs = xp.argwhere(i_mask)
         j_idxs = xp.argwhere(j_mask)
 
-        super_i_idx = xp.where((i_idxs == idxs).all(axis=1))[0]
-        super_j_idx = xp.where((j_idxs == idxs).all(axis=1))[0]
+        super_i_idx = get_idx(i_idxs, idxs)
+        super_j_idx = get_idx(j_idxs, idxs)
 
-        N = xp.sum(mask)
+        N = int(xp.sum(mask))
         store_E = xp.empty((N, i+2))
 
         if i == 0:
             store_E[super_i_idx, 0] = -1*beta[i_mask]*cen_sep[i_mask]*prefactor[i_mask]/p[i_mask]
             store_E[super_j_idx, 0] = alpha[j_mask]*cen_sep[j_mask]*prefactor[j_mask]/p[j_mask]
 
-            store_E[:, 1][i_mask.flatten()] = prefactor[i_mask]/(2*p[i_mask])
-            store_E[:, 1][j_mask.flatten()] = prefactor[j_mask] / (2*p[j_mask])
+            store_E[super_i_idx, 1] = prefactor[i_mask]/(2*p[i_mask])
+            store_E[super_j_idx, 1] = prefactor[j_mask] / (2*p[j_mask])
 
             added_E_coeffs.append(store_E)
             added_E_idxs.append(idxs)
@@ -208,8 +214,8 @@ def calc_E_1d(exp, cen, pow):
             prev_E = added_E_coeffs[-1]
             prev_idxs = added_E_idxs[-1]
 
-            super_i_prev_idx = xp.where((i_idxs == prev_idxs).all(axis=1))[0]
-            super_j_prev_idx = xp.where((j_idxs == prev_idxs).all(axis=1))[0]
+            super_i_prev_idx = get_idx(i_idxs, prev_idxs)
+            super_j_prev_idx = get_idx(j_idxs, prev_idxs)
 
             for need_t in range(i+2):
                 i_term = -1*beta[i_mask]*cen_sep[i_mask]*prev_E[super_i_prev_idx, need_t]/p[i_mask]
@@ -223,8 +229,8 @@ def calc_E_1d(exp, cen, pow):
                     i_term += prev_E[super_i_prev_idx, need_t+1]*(need_t+1)
                     j_term += prev_E[super_j_prev_idx, need_t+1]*(need_t+1)
 
-                store_E[super_i_idx] = i_term
-                store_E[super_j_idx] = j_term
+                store_E[super_i_idx, need_t] = i_term
+                store_E[super_j_idx, need_t] = j_term
 
                 added_E_coeffs.append(store_E)
                 added_E_idxs.append(idxs)
@@ -234,7 +240,7 @@ def calc_E_1d(exp, cen, pow):
     size = len(added_E_idxs)
 
     for i in range(size-2):
-        super_idx = xp.where((added_E_idxs[size-i-2] == seen).all(axis=1))[0]
+        super_idx = get_idx(added_E_idxs[size-i-2], seen)
         added_E_coeffs[size-i-2] = xp.delete(added_E_coeffs[size-i-2], super_idx)
         added_E_idxs[size-i-2] = xp.delete(added_E_idxs[size-i-2], super_idx)
         seen = xp.concatenate((seen, added_E_idxs[size-i-2]))
@@ -248,7 +254,7 @@ def calc_E_1d(exp, cen, pow):
     return added_E_coeffs, added_E_idxs
 
 
-
+'''
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
@@ -289,4 +295,5 @@ T_matrix = T_matrix.T
 
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
-
+'''
+E_coeffs, E_idxs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
