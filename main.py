@@ -161,7 +161,9 @@ def R_v_plus_1(idxs, R_matrix, P_x, C_x):
     return idxs[3]*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]-1] + (P_x - C_x)*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]]
 
 def calc_E_1d(exp, cen, pow):
-    p = xp.add.outer(exp, exp)
+    alpha = xp.broadcast_to(exp[:, None], (exp.shape[0], exp.shape[0]))
+    beta = xp.broadcast_to(exp[None, :], (exp.shape[0], exp.shape[0]))
+    p = alpha + beta
     q = xp.outer(exp, exp)/p
     cen_sep = xp.subtract.outer(cen, cen)
 
@@ -177,16 +179,52 @@ def calc_E_1d(exp, cen, pow):
 
     added_E_coeffs = []
     added_E_idxs = []
-    identifier = []
 
     for i in range(max_loop):
         mask = (t_max > i)
-        i_mask = (pow_iter_pairs[:, :, 0] == pow_pairs[:, :, 0])
-        j_mask = (pow_iter_pairs[:, :, 1] == pow_pairs[:, :, 1])
-        i_mask &= mask
-        j_mask &= mask
-        j_mask &= ~i_mask
+        j_mask = mask & (pow_iter_pairs[:, :, 0] == pow_pairs[:, :, 0])
+        i_mask = ~j_mask & mask
 
+        idxs = xp.argwhere(mask)
+        i_idxs = xp.argwhere(i_mask)
+        j_idxs = xp.argwhere(j_mask)
+
+        super_i_idx = xp.where((i_idxs == idxs).all(axis=1))[0]
+        super_j_idx = xp.where((j_idxs == idxs).all(axis=1))[0]
+
+        N = xp.sum(mask)
+        store_E = xp.empty((N, i+2))
+
+        if i == 0:
+            store_E[super_i_idx, 0] = -1*beta[i_mask]*cen_sep[i_mask]*prefactor[i_mask]/p[i_mask]
+            store_E[super_j_idx, 0] = alpha[j_mask]*cen_sep[j_mask]*prefactor[j_mask]/p[j_mask]
+
+            store_E[:, 1][i_mask.flatten()] = prefactor[i_mask]/(2*p[i_mask])
+            store_E[:, 1][j_mask.flatten()] = prefactor[j_mask] / (2*p[j_mask])
+
+            added_E_coeffs.append(store_E)
+            added_E_idxs.append(idxs)
+        else:
+            prev_E = added_E_coeffs[-1]
+            prev_idxs = added_E_idxs[-1]
+
+            super_i_prev_idx = xp.where((i_idxs == prev_idxs).all(axis=1))[0]
+            super_j_prev_idx = xp.where((j_idxs == prev_idxs).all(axis=1))[0]
+
+            for need_t in range(i+2):
+                i_term = -1*beta[i_mask]*cen_sep[i_mask]*prev_E[super_i_prev_idx, need_t]/p[i_mask]
+                j_term = alpha[j_mask]*cen_sep[j_mask]*prev_E[super_j_prev_idx, need_t]/p[j_mask]
+
+                if need_t > 0:
+                    i_term += prev_E[super_i_prev_idx, need_t-1]/(2*p[i_mask])
+                    j_term += prev_E[super_j_prev_idx, need_t-1]/(2*p[j_mask])
+
+                if need_t < i+1:
+                    i_term += prev_E[super_i_prev_idx, need_t+1]*(need_t+1)
+                    j_term += prev_E[super_j_prev_idx, need_t+1]*(need_t+1)
+
+                store_E[super_i_idx] = i_term
+                store_E[super_j_idx] = j_term
 
 
 
