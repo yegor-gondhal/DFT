@@ -178,7 +178,7 @@ def calc_E_1d(exp, cen, pow):
     prefactor = xp.exp(prefactor)
 
     s = pow.shape[0]
-    pow_pairs = xp.stack((xp.broadcast_to(pow[:, None], (s, s)), xp.broadcast_to(pow[:, None], (s, s))), axis=-1)
+    pow_pairs = xp.stack((xp.broadcast_to(pow[:, None], (s, s)), xp.broadcast_to(pow[None, :], (s, s))), axis=-1)
     pow_iter_pairs = xp.zeros_like(pow_pairs)
     t_max = xp.add.outer(pow, pow)
     max_loop = int(xp.max(t_max))
@@ -191,6 +191,9 @@ def calc_E_1d(exp, cen, pow):
         j_mask = mask & (pow_iter_pairs[:, :, 0] == pow_pairs[:, :, 0])
         i_mask = ~j_mask & mask
 
+        pow_iter_pairs[i_mask, 0] += 1
+        pow_iter_pairs[j_mask, 1] += 1
+
         idxs = xp.argwhere(mask)
         i_idxs = xp.argwhere(i_mask)
         j_idxs = xp.argwhere(j_mask)
@@ -200,6 +203,9 @@ def calc_E_1d(exp, cen, pow):
 
         N = int(xp.sum(mask))
         store_E = xp.empty((N, i+2))
+
+        N_i = int(xp.sum(i_mask))
+        N_j = int(xp.sum(j_mask))
 
         if i == 0:
             store_E[super_i_idx, 0] = -1*beta[i_mask]*cen_sep[i_mask]*prefactor[i_mask]/p[i_mask]
@@ -218,38 +224,45 @@ def calc_E_1d(exp, cen, pow):
             super_j_prev_idx = get_idx(j_idxs, prev_idxs)
 
             for need_t in range(i+2):
-                i_term = -1*beta[i_mask]*cen_sep[i_mask]*prev_E[super_i_prev_idx, need_t]/p[i_mask]
-                j_term = alpha[j_mask]*cen_sep[j_mask]*prev_E[super_j_prev_idx, need_t]/p[j_mask]
+                i_term = xp.zeros(N_i)
+                j_term = xp.zeros(N_j)
+
+                if need_t <= i:
+                    i_term += -1*beta[i_mask]*cen_sep[i_mask]*prev_E[super_i_prev_idx, need_t]/p[i_mask]
+                    j_term += alpha[j_mask]*cen_sep[j_mask]*prev_E[super_j_prev_idx, need_t]/p[j_mask]
 
                 if need_t > 0:
                     i_term += prev_E[super_i_prev_idx, need_t-1]/(2*p[i_mask])
                     j_term += prev_E[super_j_prev_idx, need_t-1]/(2*p[j_mask])
 
-                if need_t < i+1:
+                if need_t < i:
                     i_term += prev_E[super_i_prev_idx, need_t+1]*(need_t+1)
                     j_term += prev_E[super_j_prev_idx, need_t+1]*(need_t+1)
 
                 store_E[super_i_idx, need_t] = i_term
                 store_E[super_j_idx, need_t] = j_term
 
-                added_E_coeffs.append(store_E)
-                added_E_idxs.append(idxs)
+            added_E_coeffs.append(store_E)
+            added_E_idxs.append(idxs)
 
     base_idxs = xp.argwhere(xp.ones_like(t_max) == 1)
+
+    added_E_coeffs.insert(0, prefactor.ravel())
+    added_E_idxs.insert(0, base_idxs)
+    print("Before\n")
+    for (sub_e, sub_idx) in zip(added_E_coeffs, added_E_idxs):
+        for (subb_e, subb_idx) in zip(sub_e, sub_idx):
+            print(subb_e, " at ", subb_idx)
+        print("\n")
+
     seen = added_E_idxs[-1]
     size = len(added_E_idxs)
 
-    for i in range(size-2):
-        super_idx = get_idx(added_E_idxs[size-i-2], seen)
-        added_E_coeffs[size-i-2] = xp.delete(added_E_coeffs[size-i-2], super_idx)
-        added_E_idxs[size-i-2] = xp.delete(added_E_idxs[size-i-2], super_idx)
+    for i in range(size-1):
+        super_idx = get_idx(seen, added_E_idxs[size-i-2])
+        added_E_coeffs[size-i-2] = xp.delete(added_E_coeffs[size-i-2], super_idx, axis=0)
+        added_E_idxs[size-i-2] = xp.delete(added_E_idxs[size-i-2], super_idx, axis=0)
         seen = xp.concatenate((seen, added_E_idxs[size-i-2]))
-
-    super_idx = xp.where((base_idxs == seen).all(axis=1))[0]
-    base_idx = xp.delete(base_idxs, super_idx)
-
-    added_E_coeffs.insert(0, prefactor[base_idx[:, 0], base_idx[:, 1]])
-    added_E_idxs.insert(0, base_idx)
 
     return added_E_coeffs, added_E_idxs
 
