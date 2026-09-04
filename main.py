@@ -186,6 +186,11 @@ def calc_E_1d(exp, cen, pow):
     added_E_coeffs = []
     added_E_idxs = []
 
+    base_idxs = xp.argwhere(xp.ones_like(t_max) == 1)
+
+    added_E_coeffs.insert(0, prefactor.ravel()[:, None])
+    added_E_idxs.insert(0, base_idxs)
+
     for i in range(max_loop):
         mask = (t_max > i)
         j_mask = mask & (pow_iter_pairs[:, :, 0] == pow_pairs[:, :, 0])
@@ -207,62 +212,38 @@ def calc_E_1d(exp, cen, pow):
         N_i = int(xp.sum(i_mask))
         N_j = int(xp.sum(j_mask))
 
-        if i == 0:
-            store_E[super_i_idx, 0] = -1*beta[i_mask]*cen_sep[i_mask]*prefactor[i_mask]/p[i_mask]
-            store_E[super_j_idx, 0] = alpha[j_mask]*cen_sep[j_mask]*prefactor[j_mask]/p[j_mask]
+        prev_E = added_E_coeffs[-1]
+        prev_idxs = added_E_idxs[-1]
 
-            store_E[super_i_idx, 1] = prefactor[i_mask]/(2*p[i_mask])
-            store_E[super_j_idx, 1] = prefactor[j_mask] / (2*p[j_mask])
+        super_i_prev_idx = get_idx(i_idxs, prev_idxs)
+        super_j_prev_idx = get_idx(j_idxs, prev_idxs)
 
-            added_E_coeffs.append(store_E)
-            added_E_idxs.append(idxs)
-        else:
-            prev_E = added_E_coeffs[-1]
-            prev_idxs = added_E_idxs[-1]
+        for need_t in range(i+2):
+            i_term = xp.zeros(N_i)
+            j_term = xp.zeros(N_j)
 
-            super_i_prev_idx = get_idx(i_idxs, prev_idxs)
-            super_j_prev_idx = get_idx(j_idxs, prev_idxs)
+            if need_t <= i:
+                i_term += -1*beta[i_mask]*cen_sep[i_mask]*prev_E[super_i_prev_idx, need_t]/p[i_mask]
+                j_term += alpha[j_mask]*cen_sep[j_mask]*prev_E[super_j_prev_idx, need_t]/p[j_mask]
 
-            for need_t in range(i+2):
-                i_term = xp.zeros(N_i)
-                j_term = xp.zeros(N_j)
+            if need_t > 0:
+                i_term += prev_E[super_i_prev_idx, need_t-1]/(2*p[i_mask])
+                j_term += prev_E[super_j_prev_idx, need_t-1]/(2*p[j_mask])
 
-                if need_t <= i:
-                    i_term += -1*beta[i_mask]*cen_sep[i_mask]*prev_E[super_i_prev_idx, need_t]/p[i_mask]
-                    j_term += alpha[j_mask]*cen_sep[j_mask]*prev_E[super_j_prev_idx, need_t]/p[j_mask]
+            if need_t < i:
+                i_term += prev_E[super_i_prev_idx, need_t+1]*(need_t+1)
+                j_term += prev_E[super_j_prev_idx, need_t+1]*(need_t+1)
 
-                if need_t > 0:
-                    i_term += prev_E[super_i_prev_idx, need_t-1]/(2*p[i_mask])
-                    j_term += prev_E[super_j_prev_idx, need_t-1]/(2*p[j_mask])
+            store_E[super_i_idx, need_t] = i_term
+            store_E[super_j_idx, need_t] = j_term
 
-                if need_t < i:
-                    i_term += prev_E[super_i_prev_idx, need_t+1]*(need_t+1)
-                    j_term += prev_E[super_j_prev_idx, need_t+1]*(need_t+1)
+        super_idx = get_idx(idxs, prev_idxs)
 
-                store_E[super_i_idx, need_t] = i_term
-                store_E[super_j_idx, need_t] = j_term
+        added_E_coeffs[-1] = xp.delete(added_E_coeffs[-1], super_idx, axis=0)
+        added_E_idxs[-1] = xp.delete(added_E_idxs[-1], super_idx, axis=0)
 
-            added_E_coeffs.append(store_E)
-            added_E_idxs.append(idxs)
-
-    base_idxs = xp.argwhere(xp.ones_like(t_max) == 1)
-
-    added_E_coeffs.insert(0, prefactor.ravel())
-    added_E_idxs.insert(0, base_idxs)
-    print("Before\n")
-    for (sub_e, sub_idx) in zip(added_E_coeffs, added_E_idxs):
-        for (subb_e, subb_idx) in zip(sub_e, sub_idx):
-            print(subb_e, " at ", subb_idx)
-        print("\n")
-
-    seen = added_E_idxs[-1]
-    size = len(added_E_idxs)
-
-    for i in range(size-1):
-        super_idx = get_idx(seen, added_E_idxs[size-i-2])
-        added_E_coeffs[size-i-2] = xp.delete(added_E_coeffs[size-i-2], super_idx, axis=0)
-        added_E_idxs[size-i-2] = xp.delete(added_E_idxs[size-i-2], super_idx, axis=0)
-        seen = xp.concatenate((seen, added_E_idxs[size-i-2]))
+        added_E_coeffs.append(store_E)
+        added_E_idxs.append(idxs)
 
     return added_E_coeffs, added_E_idxs
 
