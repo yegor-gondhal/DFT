@@ -3,6 +3,8 @@ import cupy as cp
 import cupyx.scipy.special as mspecial
 import basis_set_exchange as bse
 import json
+import ragged
+import awkward as ak
 
 xp = cp
 
@@ -72,6 +74,7 @@ exp = xp.array(exp)
 coeffs = xp.array(coeffs)
 cen = xp.array(cen)
 pow = xp.array(pow)
+centers = xp.array(centers)
 
 exp_shape = exp.shape
 cen = cen.repeat(exp_shape[1], axis=0).reshape((exp_shape[0], exp_shape[1], 3))
@@ -149,16 +152,6 @@ def boys(m, t):
     term = mspecial.gammainc(m + 0.5, t)*mspecial.gamma(m + 0.5)
     term /= 2*xp.power(t, m + 0.5) + 1e-40
     return term
-
-def R000(m, t, p):
-    return xp.power(-2*p, m)*boys(m, t)
-
-def R_t_plus_1(idxs, R_matrix, P_x, C_x):
-    return idxs[1]*R_matrix[idxs[0]+1, idxs[1]-1, idxs[2], idxs[3]] + (P_x - C_x)*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]]
-def R_u_plus_1(idxs, R_matrix, P_x, C_x):
-    return idxs[2]*R_matrix[idxs[0]+1, idxs[1], idxs[2]-1, idxs[3]] + (P_x - C_x)*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]]
-def R_v_plus_1(idxs, R_matrix, P_x, C_x):
-    return idxs[3]*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]-1] + (P_x - C_x)*R_matrix[idxs[0]+1, idxs[1], idxs[2], idxs[3]]
 
 def get_idx(arr1, arr2):
     mask1 = (arr1[:, 0][:, None] == arr2[:, 0][None, :])
@@ -245,10 +238,53 @@ def calc_E_1d(exp, cen, pow):
         added_E_coeffs.append(store_E)
         added_E_idxs.append(idxs)
 
-    return added_E_coeffs, added_E_idxs
+    return added_E_coeffs, added_E_idxs, prefactor
 
+def calc_R(exp, cen, pow, centers, prefactor):
+    p = exp[:, None]+exp[None, :]
+    q = xp.outer(exp, exp)/p
+    P = ((exp[:, None]*cen)[:, None, :] + (exp[:, None]*cen)[None, :, :])/p[..., None]
 
-'''
+    T = P[:, :, None, :] - centers[None, None, :, :]
+    T = xp.sum(xp.square(T), axis=-1) * p[:, :, None]
+
+    max_hermite = xp.sum(pow, axis=-1)
+    max_hermite = max_hermite[:, None] + max_hermite[None, :] + 1
+
+    x_shape = pow[:, 0][:, None] + pow[:, 0][None, :] + 1
+    y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
+    z_shape = pow[:, 2][:, None] + pow[:, 2][None, :] + 1
+    M = int(centers.shape[0])
+
+    dim4 = xp.ravel(x_shape)
+    dim5 = xp.ravel(y_shape)
+    dim6 = xp.ravel(z_shape)
+    dim7 = xp.ravel(max_hermite)
+
+    total_elem = x_shape*y_shape*z_shape*max_hermite*M
+    total_elem = int(xp.sum(total_elem, axis=(0, 1)))
+    flat_vals = xp.zeros(total_elem)
+
+    outer_counts = xp.array([xp.size(exp), xp.size(exp)])
+    layout = ak.unflatten(flat_vals, dim7)
+    layout = ak.unflatten(layout, dim6)
+    layout = ak.unflatten(layout, dim5)
+    layout = ak.unflatten(layout, dim4)
+    layout = ak.unflatten(layout, M)
+    R_matrix = ak.unflatten(layout, outer_counts)
+
+    '''
+    R_matrix = []
+    for i in range(len(exp)):
+        R_row = []
+        for j in range(len(exp)):
+            x_len, y_len, z_len = int(x_shape[i, j]), int(y_shape[i, j]), int(z_shape[i, j])
+            n_max = int(max_hermite[i, j])
+            M = int(centers.shape[0])
+            R = xp.empty((M, x_len, y_len, z_len, n_max))
+            n_arr = xp.arange(n_max)
+            R[:, 0, 0, 0, :] = xp.power(-2*p[i, j], n_arr)*boys(n_arr[None, :], T[i, j, :, None])
+    '''
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
@@ -256,19 +292,24 @@ print("Min position: ", xp.min(cen))
 print("Max power: ", xp.max(pow))
 print("Min power: ", xp.min(pow), "\n")
 
+print("Num Funcs: ", xp.size(exp), "\n")
+'''
+print("Coeffs...")
 normals = normal(exp, pow)
 normals = xp.outer(normals, normals)
 mult_coeffs = xp.outer(coeffs, coeffs)
 
+print("Overlap...")
 overlapx = overlap(exp, exp, cen[:, 0], cen[:, 0], pow[:, 0], pow[:, 0])
 overlapy = overlap(exp, exp, cen[:, 1], cen[:, 1], pow[:, 1], pow[:, 1])
 overlapz = overlap(exp, exp, cen[:, 2], cen[:, 2], pow[:, 2], pow[:, 2])
 
+print("T Matrix...")
 T_x = T_raw(exp, cen[:, 0], pow[:, 0], overlapx)
 T_y = T_raw(exp, cen[:, 1], pow[:, 1], overlapy)
 T_z = T_raw(exp, cen[:, 2], pow[:, 2], overlapz)
 
-
+print("Processing Overlap...")
 overlaps = normals*mult_coeffs*overlapx*overlapy*overlapz
 overlaps = overlaps.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
 overlaps = xp.sum(overlaps, axis=-1)
@@ -277,6 +318,7 @@ overlaps = overlaps.reshape(-1, exp_shape[0], exp_shape[1])
 overlaps = xp.sum(overlaps, axis=-1)
 overlaps = overlaps.T
 
+print("Processing T Matrix...")
 T_primitive = T_x*overlapy*overlapz + T_y*overlapx*overlapz + T_z*overlapx*overlapy
 T_matrix = -0.5*normals*mult_coeffs*T_primitive
 T_matrix = T_matrix.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
@@ -289,5 +331,11 @@ T_matrix = T_matrix.T
 
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
+
+print("E Values...")
+E_x_coeffs, E_x_idxs, prex = calc_E_1d(exp, cen[:, 0], pow[:, 0])
+E_y_coeffs, E_y_idxs, prey = calc_E_1d(exp, cen[:, 1], pow[:, 1])
 '''
-E_coeffs, E_idxs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
+E_z_coeffs, E_z_idxs, prez = calc_E_1d(exp, cen[:, 2], pow[:, 2])
+
+calc_R(exp, cen, pow, centers, prez)
