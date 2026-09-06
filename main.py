@@ -5,6 +5,7 @@ import basis_set_exchange as bse
 import json
 import ragged
 import awkward as ak
+import time
 
 xp = cp
 
@@ -149,9 +150,16 @@ def T_raw(exp, cen, pow, prev_overlap):
     return result
 
 def boys(m, t):
-    term = mspecial.gammainc(m + 0.5, t)*mspecial.gamma(m + 0.5)
-    term /= 2*xp.power(t, m + 0.5) + 1e-40
-    return term
+    m_ak = m._impl
+    t_ak = t._impl
+    m_flat_ak = ak.flatten(m_ak, axis=None)
+    t_flat_ak = ak.flatten(t_ak, axis=None)
+    m_flat = m_flat_ak.layout.data
+    t_flat = t_flat_ak.layout.data
+    term = mspecial.gammainc(m_flat + 0.5, t_flat)*mspecial.gamma(m_flat + 0.5)
+    term /= 2*xp.power(t_flat, m_flat + 0.5) + 1e-40
+    result = ak.unflatten(term, ak.num(m_ak, axis=-1), axis=-1)
+    return ragged.array(result)
 
 def get_idx(arr1, arr2):
     mask1 = (arr1[:, 0][:, None] == arr2[:, 0][None, :])
@@ -247,6 +255,7 @@ def calc_R(exp, cen, pow, centers, prefactor):
 
     T = P[:, :, None, :] - centers[None, None, :, :]
     T = xp.sum(xp.square(T), axis=-1) * p[:, :, None]
+    print(T.shape)
 
     max_hermite = xp.sum(pow, axis=-1)
     max_hermite = max_hermite[:, None] + max_hermite[None, :] + 1
@@ -255,23 +264,51 @@ def calc_R(exp, cen, pow, centers, prefactor):
     y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
     z_shape = pow[:, 2][:, None] + pow[:, 2][None, :] + 1
     M = int(centers.shape[0])
-
-    dim4 = xp.ravel(x_shape)
-    dim5 = xp.ravel(y_shape)
-    dim6 = xp.ravel(z_shape)
-    dim7 = xp.ravel(max_hermite)
-
+    xp.cuda.Device().synchronize()
+    t1 = time.time()
     total_elem = x_shape*y_shape*z_shape*max_hermite*M
     total_elem = int(xp.sum(total_elem, axis=(0, 1)))
     flat_vals = xp.zeros(total_elem)
 
-    outer_counts = xp.array([xp.size(exp), xp.size(exp)])
+    dim7 = xp.full(total_elem // M, M)
     layout = ak.unflatten(flat_vals, dim7)
+
+    dim6 = max_hermite.ravel()
+    dim6 = xp.repeat(dim6, xp.ravel(x_shape*y_shape*z_shape))
     layout = ak.unflatten(layout, dim6)
+
+    dim5 = z_shape.ravel()
+    dim5 = xp.repeat(dim5, xp.ravel(x_shape*y_shape))
     layout = ak.unflatten(layout, dim5)
+
+    dim4 = y_shape.ravel()
+    dim4 = xp.repeat(dim4, xp.ravel(x_shape))
     layout = ak.unflatten(layout, dim4)
-    layout = ak.unflatten(layout, M)
-    R_matrix = ak.unflatten(layout, outer_counts)
+
+    dim3 = x_shape.ravel()
+    layout = ak.unflatten(layout, dim3)
+
+    N_exp = xp.size(exp)
+    outer = xp.full(N_exp, N_exp)
+    R_matrix = ak.unflatten(layout, outer)
+    n_arr = xp.ravel(max_hermite)
+    elem = int(xp.sum(n_arr))
+    flat_vals = xp.zeros(elem)
+    layout = ak.unflatten(flat_vals, n_arr)
+    outer = xp.full(N_exp, N_exp)
+    n_arr = ak.unflatten(layout, outer)
+    n_arr = ak.local_index(n_arr, axis=-1)
+    n_arr = ragged.array(n_arr)
+    print(n_arr.shape)
+
+    T = ragged.array(T)
+    p = ragged.array(p)
+    xp.cuda.Device().synchronize()
+    t2 = time.time()
+    print(t2-t1)
+
+    R_matrix[:, :, 0, 0, 0, :, :] = (-2*p[:, :, None, None] ** n_arr[:, :, None, :])*boys(n_arr[:, :, None, :], T[:, :, :, None])
+
 
     '''
     R_matrix = []
