@@ -43,7 +43,7 @@ def gaussian(pos, center, alpha, powers):
 atoms = ["11", "20", "3", "16", "10", "12", "17"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [-1, 0, 0], [0, -1, 0]]
 '''
-atoms = ["1", "40"]
+atoms = ["10", "20"]
 centers = [[0, 0, 0], [1, 0, 0]]
 
 exp = []
@@ -150,16 +150,9 @@ def T_raw(exp, cen, pow, prev_overlap):
     return result
 
 def boys(m, t):
-    m_ak = m._impl
-    t_ak = t._impl
-    m_flat_ak = ak.flatten(m_ak, axis=None)
-    t_flat_ak = ak.flatten(t_ak, axis=None)
-    m_flat = m_flat_ak.layout.data
-    t_flat = t_flat_ak.layout.data
-    term = mspecial.gammainc(m_flat + 0.5, t_flat)*mspecial.gamma(m_flat + 0.5)
-    term /= 2*xp.power(t_flat, m_flat + 0.5) + 1e-40
-    result = ak.unflatten(term, ak.num(m_ak, axis=-1), axis=-1)
-    return ragged.array(result)
+    term = mspecial.gammainc(m + 0.5, t)*mspecial.gamma(m + 0.5)
+    term /= 2*xp.power(t, m + 0.5) + 1e-40
+    return term
 
 def get_idx(arr1, arr2):
     mask1 = (arr1[:, 0][:, None] == arr2[:, 0][None, :])
@@ -248,14 +241,13 @@ def calc_E_1d(exp, cen, pow):
 
     return added_E_coeffs, added_E_idxs, prefactor
 
-def calc_R(exp, cen, pow, centers, prefactor):
+def calc_R(exp, cen, pow, centers):
     p = exp[:, None]+exp[None, :]
     q = xp.outer(exp, exp)/p
     P = ((exp[:, None]*cen)[:, None, :] + (exp[:, None]*cen)[None, :, :])/p[..., None]
 
     T = P[:, :, None, :] - centers[None, None, :, :]
     T = xp.sum(xp.square(T), axis=-1) * p[:, :, None]
-    print(T.shape)
 
     max_hermite = xp.sum(pow, axis=-1)
     max_hermite = max_hermite[:, None] + max_hermite[None, :] + 1
@@ -263,65 +255,41 @@ def calc_R(exp, cen, pow, centers, prefactor):
     x_shape = pow[:, 0][:, None] + pow[:, 0][None, :] + 1
     y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
     z_shape = pow[:, 2][:, None] + pow[:, 2][None, :] + 1
-    M = int(centers.shape[0])
-    xp.cuda.Device().synchronize()
-    t1 = time.time()
-    total_elem = x_shape*y_shape*z_shape*max_hermite*M
-    total_elem = int(xp.sum(total_elem, axis=(0, 1)))
-    flat_vals = xp.zeros(total_elem)
 
-    dim7 = xp.full(total_elem // M, M)
-    layout = ak.unflatten(flat_vals, dim7)
-
-    dim6 = max_hermite.ravel()
-    dim6 = xp.repeat(dim6, xp.ravel(x_shape*y_shape*z_shape))
-    layout = ak.unflatten(layout, dim6)
-
-    dim5 = z_shape.ravel()
-    dim5 = xp.repeat(dim5, xp.ravel(x_shape*y_shape))
-    layout = ak.unflatten(layout, dim5)
-
-    dim4 = y_shape.ravel()
-    dim4 = xp.repeat(dim4, xp.ravel(x_shape))
-    layout = ak.unflatten(layout, dim4)
-
-    dim3 = x_shape.ravel()
-    layout = ak.unflatten(layout, dim3)
-
-    N_exp = xp.size(exp)
-    outer = xp.full(N_exp, N_exp)
-    R_matrix = ak.unflatten(layout, outer)
-    n_arr = xp.ravel(max_hermite)
-    elem = int(xp.sum(n_arr))
-    flat_vals = xp.zeros(elem)
-    layout = ak.unflatten(flat_vals, n_arr)
-    outer = xp.full(N_exp, N_exp)
-    n_arr = ak.unflatten(layout, outer)
-    n_arr = ak.local_index(n_arr, axis=-1)
-    n_arr = ragged.array(n_arr)
-    print(n_arr.shape)
-
-    T = ragged.array(T)
-    p = ragged.array(p)
-    xp.cuda.Device().synchronize()
-    t2 = time.time()
-    print(t2-t1)
-
-    R_matrix[:, :, 0, 0, 0, :, :] = (-2*p[:, :, None, None] ** n_arr[:, :, None, :])*boys(n_arr[:, :, None, :], T[:, :, :, None])
-
-
-    '''
     R_matrix = []
     for i in range(len(exp)):
         R_row = []
         for j in range(len(exp)):
             x_len, y_len, z_len = int(x_shape[i, j]), int(y_shape[i, j]), int(z_shape[i, j])
-            n_max = int(max_hermite[i, j])
+            n_len = int(max_hermite[i, j]) + 1
             M = int(centers.shape[0])
-            R = xp.empty((M, x_len, y_len, z_len, n_max))
-            n_arr = xp.arange(n_max)
-            R[:, 0, 0, 0, :] = xp.power(-2*p[i, j], n_arr)*boys(n_arr[None, :], T[i, j, :, None])
-    '''
+            R = xp.empty((x_len, y_len, z_len, M, n_len))
+            n_arr = xp.arange(n_len)
+            R[0, 0, 0, :, :] = xp.power(-2*p[i, j], n_arr)*boys(n_arr[None, :], T[i, j, :, None])
+
+            for x in range(x_len):
+                for y in range(y_len):
+                    for z in range(z_len):
+                        if x == 0 and y == 0 and z == 0:
+                            continue
+                        if (x != 0):
+                            R[x, y, z, :, :-1] = (P[i, j, 0] - centers[:, 0])[:, None]*R[x-1, y, z, :, 1:]
+                            if x > 1:
+                                R[x, y, z, :, :-1] += (x-1)*R[x-2, y, z, :, 1:]
+                        elif (y != 0):
+                            R[x, y, z, :, :-1] = (P[i, j, 1] - centers[:, 1])[:, None] * R[x, y-1, z, :, 1:]
+                            if y > 1:
+                                R[x, y, z, :, :-1] += (y - 1) * R[x, y-2, z, :, 1:]
+                        else:
+                            R[x, y, z, :, :-1] = (P[i, j, 2] - centers[:, 2])[:, None] * R[x, y, z-1, :, 1:]
+                            if z > 1:
+                                R[x, y, z, :, :-1] += (z - 1) * R[x, y, z-2, :, 1:]
+
+            R_row.append(R[..., 0])
+        R_matrix.append(R_row)
+    return R_matrix
+
+
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
@@ -368,11 +336,10 @@ T_matrix = T_matrix.T
 
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
-
+'''
 print("E Values...")
 E_x_coeffs, E_x_idxs, prex = calc_E_1d(exp, cen[:, 0], pow[:, 0])
 E_y_coeffs, E_y_idxs, prey = calc_E_1d(exp, cen[:, 1], pow[:, 1])
-'''
 E_z_coeffs, E_z_idxs, prez = calc_E_1d(exp, cen[:, 2], pow[:, 2])
 
-calc_R(exp, cen, pow, centers, prez)
+calc_R(exp, cen, pow, centers)
