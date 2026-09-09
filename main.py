@@ -43,7 +43,7 @@ def gaussian(pos, center, alpha, powers):
 atoms = ["11", "20", "3", "16", "10", "12", "17"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [-1, 0, 0], [0, -1, 0]]
 '''
-atoms = ["10", "20"]
+atoms = ["1", "1"]
 centers = [[0, 0, 0], [1, 0, 0]]
 
 exp = []
@@ -269,7 +269,6 @@ def calc_E_1d(exp, cen, pow):
 
 def calc_R(exp, cen, pow, centers):
     p = exp[:, None]+exp[None, :]
-    q = xp.outer(exp, exp)/p
     P = ((exp[:, None]*cen)[:, None, :] + (exp[:, None]*cen)[None, :, :])/p[..., None]
 
     T = P[:, :, None, :] - centers[None, None, :, :]
@@ -315,7 +314,7 @@ def calc_R(exp, cen, pow, centers):
 
             R_row.append(R[..., 0])
         R_matrix.append(R_row)
-    return R_matrix, p
+    return R_matrix, p, P
 
 def nuclear(Ex, Ey, Ez, R, p):
     nuclear = xp.empty((len(Ex), len(Ex), centers.shape[0]))
@@ -339,6 +338,59 @@ def nuclear_repulsion(Z, centers):
                 result += Z[i]*Z[j]/xp.linalg.norm(centers[i] - centers[j])
     return result
 
+def calc_R_electron(pow, p, P):
+    K = pow.shape[0]**2
+
+    p = p.ravel()
+    P = P.reshape(-1, 3)
+    rho = p[:, None]*p[None, :]/(p[:, None] + p[None, :])
+    R_ij = P[:, None, :] - P[None, :, :]
+    T = xp.sum(xp.square(R_ij), axis=-1)*rho
+
+    pow = pow[:, None, :] + pow[None, :, :]
+    pow = pow.reshape(-1, 3)
+
+    max_hermite = xp.sum(pow, axis=-1)
+    max_hermite = max_hermite[:, None] + max_hermite[None, :] + 1
+
+    x_shape = pow[:, 0][:, None] + pow[:, 0][None, :] + 1
+    y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
+    z_shape = pow[:, 2][:, None] + pow[:, 2][None, :] + 1
+
+    R_matrix = []
+    for i in range(K):
+        print(f"{i}/{K}")
+        R_row = []
+        for j in range(K):
+            x_len, y_len, z_len = int(x_shape[i, j]), int(y_shape[i, j]), int(z_shape[i, j])
+            n_len = int(max_hermite[i, j]) + 1
+            R = xp.empty((x_len, y_len, z_len, n_len))
+            n_arr = xp.arange(n_len)
+            boys_t = xp.broadcast_to(T[i, j][None], (n_len,))
+            R[0, 0, 0, :] = xp.power(-2*rho[i, j], n_arr)*boys(n_arr, boys_t)
+
+            for x in range(x_len):
+                for y in range(y_len):
+                    for z in range(z_len):
+                        if x == 0 and y == 0 and z == 0:
+                            continue
+                        if (x != 0):
+                            R[x, y, z, :-1] = R_ij[i, j, 0]*R[x-1, y, z, 1:]
+                            if x > 1:
+                                R[x, y, z, :-1] += (x-1)*R[x-2, y, z, 1:]
+                        elif (y != 0):
+                            R[x, y, z, :-1] = R_ij[i, j, 1] * R[x, y-1, z, 1:]
+                            if y > 1:
+                                R[x, y, z, :-1] += (y - 1) * R[x, y-2, z, 1:]
+                        else:
+                            R[x, y, z, :-1] = R_ij[i, j, 2] * R[x, y, z-1, 1:]
+                            if z > 1:
+                                R[x, y, z, :-1] += (z - 1) * R[x, y, z-2, 1:]
+
+            R_row.append(R[..., 0])
+        R_matrix.append(R_row)
+    return R_matrix
+
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
@@ -347,7 +399,7 @@ print("Max power: ", xp.max(pow))
 print("Min power: ", xp.min(pow), "\n")
 
 print("Num Funcs: ", xp.size(exp), "\n")
-
+'''
 print("Coeffs...")
 normals = normal(exp, pow)
 normals = xp.outer(normals, normals)
@@ -391,8 +443,9 @@ print("E Values...")
 E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
 E_y_coeffs = calc_E_1d(exp, cen[:, 1], pow[:, 1])
 E_z_coeffs = calc_E_1d(exp, cen[:, 2], pow[:, 2])
-
-R_matrix, p = calc_R(exp, cen, pow, centers)
+'''
+R_matrix, p, P = calc_R(exp, cen, pow, centers)
+'''
 nuclear = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
 
 nuclear = nuclear.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
@@ -408,3 +461,6 @@ print("Symmetric V Matrix: ", xp.isclose(nuclear, nuclear.T).all())
 print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
 
 E_NN = nuclear_repulsion(Z, centers)
+'''
+print("Electron Repulsion...")
+calc_R_electron(pow, p, P)
