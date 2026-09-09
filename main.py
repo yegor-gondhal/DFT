@@ -149,10 +149,24 @@ def T_raw(exp, cen, pow, prev_overlap):
         result[:, idxs] += pow[idxs][None, :]*(pow[idxs][None, :] - 1)*overlap(exp, exp[idxs], cen, cen[idxs], pow, pow[idxs]-2)
     return result
 
-def boys(m, t):
+def boys_large(m, t):
     term = mspecial.gammainc(m + 0.5, t)*mspecial.gamma(m + 0.5)
     term /= 2*xp.power(t, m + 0.5) + 1e-40
     return term
+
+def boys_small(m, t):
+    k = xp.arange(30)
+    term = xp.power(-t[:, None], k[None, :])
+    term /= mspecial.gamma(k[None, :] + 1)
+    term1 = 2*m[:, None] + 2*k[None, :] + 1
+    return xp.sum(term/term1, axis=-1)
+
+def boys(m, t):
+    result = xp.empty_like(t)
+    mask = (t >= 1)
+    result[mask] = boys_large(m[mask], t[mask])
+    result[~mask] = boys_small(m[~mask], t[~mask])
+    return result
 
 def get_idx(arr1, arr2):
     mask1 = (arr1[:, 0][:, None] == arr2[:, 0][None, :])
@@ -239,7 +253,16 @@ def calc_E_1d(exp, cen, pow):
         added_E_coeffs.append(store_E)
         added_E_idxs.append(idxs)
 
-    return added_E_coeffs, added_E_idxs, prefactor
+    E_coeffs = []
+    for i in range(s):
+        E_coeffs.append([])
+
+    for (e, idx) in zip(added_E_coeffs, added_E_idxs):
+        for (e_val, idx_val) in zip(e, idx):
+            E_coeffs[int(idx_val[0])].insert(int(idx_val[1]), e_val)
+
+    return E_coeffs
+    #return added_E_coeffs, added_E_idxs, prefactor
 
 def calc_R(exp, cen, pow, centers):
     p = exp[:, None]+exp[None, :]
@@ -265,7 +288,9 @@ def calc_R(exp, cen, pow, centers):
             M = int(centers.shape[0])
             R = xp.empty((x_len, y_len, z_len, M, n_len))
             n_arr = xp.arange(n_len)
-            R[0, 0, 0, :, :] = xp.power(-2*p[i, j], n_arr)*boys(n_arr[None, :], T[i, j, :, None])
+            n_arr = xp.broadcast_to(n_arr[None, :], (T.shape[2], n_len))
+            boys_t = xp.broadcast_to(T[i, j, :, None], (T.shape[2], n_len))
+            R[0, 0, 0, :, :] = xp.power(-2*p[i, j], n_arr)*boys(n_arr, boys_t)
 
             for x in range(x_len):
                 for y in range(y_len):
@@ -287,8 +312,24 @@ def calc_R(exp, cen, pow, centers):
 
             R_row.append(R[..., 0])
         R_matrix.append(R_row)
-    return R_matrix
+    return R_matrix, p
 
+def nuclear(Ex, Ey, Ez, R, p):
+    nuclear = xp.empty((len(Ex), len(Ex), centers.shape[0]))
+    Z = xp.empty(len(atoms))
+    for i in range(len(atoms)):
+        Z[i] = int(atoms[i])
+
+    for i in range(len(Ex)):
+        for j in range(len(Ex[0])):
+            V = Ex[i][j][:, None, None, None]*Ey[i][j][None, :, None, None]*Ez[i][j][None, None, :, None]*R[i][j]
+            nuclear[i, j, :] = xp.sum(V, axis=(0, 1, 2))
+
+    nuclear *= Z[None, None, :]
+    nuclear = xp.sum(nuclear, axis=-1)
+    nuclear *= -2*xp.pi/p
+
+    return nuclear
 
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
@@ -298,7 +339,7 @@ print("Max power: ", xp.max(pow))
 print("Min power: ", xp.min(pow), "\n")
 
 print("Num Funcs: ", xp.size(exp), "\n")
-'''
+
 print("Coeffs...")
 normals = normal(exp, pow)
 normals = xp.outer(normals, normals)
@@ -335,11 +376,25 @@ T_matrix = T_matrix.T
 
 
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
+print("Symmetric Overlap: ", xp.isclose(overlaps, overlaps.T).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
-'''
-print("E Values...")
-E_x_coeffs, E_x_idxs, prex = calc_E_1d(exp, cen[:, 0], pow[:, 0])
-E_y_coeffs, E_y_idxs, prey = calc_E_1d(exp, cen[:, 1], pow[:, 1])
-E_z_coeffs, E_z_idxs, prez = calc_E_1d(exp, cen[:, 2], pow[:, 2])
 
-calc_R(exp, cen, pow, centers)
+print("E Values...")
+E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
+E_y_coeffs = calc_E_1d(exp, cen[:, 1], pow[:, 1])
+E_z_coeffs = calc_E_1d(exp, cen[:, 2], pow[:, 2])
+
+R_matrix, p = calc_R(exp, cen, pow, centers)
+nuclear = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
+
+nuclear = nuclear.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
+nuclear = xp.sum(nuclear, axis=-1)
+nuclear = nuclear.T
+nuclear = nuclear.reshape(-1, exp_shape[0], exp_shape[1])
+nuclear = xp.sum(nuclear, axis=-1)
+nuclear = nuclear.T
+
+H = T_matrix + nuclear
+
+print("Symmetric V Matrix: ", xp.isclose(nuclear, nuclear.T).all())
+print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
