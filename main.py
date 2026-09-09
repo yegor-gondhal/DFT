@@ -76,6 +76,9 @@ coeffs = xp.array(coeffs)
 cen = xp.array(cen)
 pow = xp.array(pow)
 centers = xp.array(centers)
+Z = xp.empty(len(atoms))
+for i in range(len(atoms)):
+    Z[i] = int(atoms[i])
 
 exp_shape = exp.shape
 cen = cen.repeat(exp_shape[1], axis=0).reshape((exp_shape[0], exp_shape[1], 3))
@@ -316,9 +319,6 @@ def calc_R(exp, cen, pow, centers):
 
 def nuclear(Ex, Ey, Ez, R, p):
     nuclear = xp.empty((len(Ex), len(Ex), centers.shape[0]))
-    Z = xp.empty(len(atoms))
-    for i in range(len(atoms)):
-        Z[i] = int(atoms[i])
 
     for i in range(len(Ex)):
         for j in range(len(Ex[0])):
@@ -330,6 +330,14 @@ def nuclear(Ex, Ey, Ez, R, p):
     nuclear *= -2*xp.pi/p
 
     return nuclear
+
+def nuclear_repulsion(Z, centers):
+    result = 0.0
+    for i in range(len(Z)):
+        for j in range(len(Z)):
+            if i < j:
+                result += Z[i]*Z[j]/xp.linalg.norm(centers[i] - centers[j])
+    return result
 
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
@@ -398,3 +406,5 @@ H = T_matrix + nuclear
 
 print("Symmetric V Matrix: ", xp.isclose(nuclear, nuclear.T).all())
 print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
+
+E_NN = nuclear_repulsion(Z, centers)
