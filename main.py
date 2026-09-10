@@ -275,7 +275,7 @@ def calc_R(exp, cen, pow, centers):
     T = xp.sum(xp.square(T), axis=-1) * p[:, :, None]
 
     max_hermite = xp.sum(pow, axis=-1)
-    max_hermite = max_hermite[:, None] + max_hermite[None, :] + 1
+    max_hermite = max_hermite[:, None] + max_hermite[None, :]
 
     x_shape = pow[:, 0][:, None] + pow[:, 0][None, :] + 1
     y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
@@ -341,17 +341,17 @@ def nuclear_repulsion(Z, centers):
 def calc_R_electron(pow, p, P):
     K = pow.shape[0]**2
 
-    p = p.ravel()
-    P = P.reshape(-1, 3)
-    rho = p[:, None]*p[None, :]/(p[:, None] + p[None, :])
-    R_ij = P[:, None, :] - P[None, :, :]
+    p_k = p.ravel()
+    P_k = P.reshape(-1, 3)
+    rho = p_k[:, None]*p_k[None, :]/(p_k[:, None] + p_k[None, :])
+    R_ij = P_k[:, None, :] - P_k[None, :, :]
     T = xp.sum(xp.square(R_ij), axis=-1)*rho
 
     pow = pow[:, None, :] + pow[None, :, :]
     pow = pow.reshape(-1, 3)
 
     max_hermite = xp.sum(pow, axis=-1)
-    max_hermite = max_hermite[:, None] + max_hermite[None, :] + 1
+    max_hermite = max_hermite[:, None] + max_hermite[None, :]
 
     x_shape = pow[:, 0][:, None] + pow[:, 0][None, :] + 1
     y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
@@ -389,7 +389,51 @@ def calc_R_electron(pow, p, P):
 
             R_row.append(R[..., 0])
         R_matrix.append(R_row)
-    return R_matrix
+    return R_matrix, K, p_k
+
+def elec_hermite_sum(Ex, Ey, Ez, R, K, p_k):
+    S = xp.empty((K, K))
+    N = int(xp.sqrt(K))
+    for i in range(K):
+        for j in range(K):
+            a = i // N
+            b = i % N
+            c = j // N
+            d = j % N
+
+            Ex1 = Ex[a][b]
+            Ey1 = Ey[a][b]
+            Ez1 = Ez[a][b]
+            Ex2 = Ex[c][d]
+            Ey2 = Ey[c][d]
+            Ez2 = Ez[c][d]
+
+            term = (Ex1[:, None, None, None, None, None]
+                    *Ey1[None, :, None, None, None, None]
+                    *Ez1[None, None, :, None, None, None]
+                    *Ex2[None, None, None, :, None, None]
+                    *Ey2[None, None, None, None, :, None]
+                    *Ez2[None, None, None, None, None, :])
+
+            t = xp.arange(xp.size(Ex1))
+            u = xp.arange(xp.size(Ey1))
+            v = xp.arange(xp.size(Ez1))
+            tau = xp.arange(xp.size(Ex2))
+            phi = xp.arange(xp.size(Ey2))
+            chi = xp.arange(xp.size(Ez2))
+
+            term *= xp.power(-1, (tau[:, None, None] + phi[None, :, None] + chi[None, None, :])[None, None, None, ...])
+            term *= R[i][j][
+                t[:, None, None, None, None, None] * tau[None, None, None, :, None, None],
+                u[None, :, None, None, None, None] * phi[None, None, None, None, :, None],
+                v[None, None, :, None, None, None] * chi[None, None, None, None, None, :]
+            ]
+            S[i, j] = term
+
+    coeff = p_k[:, None]*p_k[None, :]*xp.sqrt(p_k[:, None] + p_k[None, :])
+    coeff = 2*xp.power(xp.pi, 2.5)/coeff
+
+    return coeff*S
 
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
@@ -438,12 +482,12 @@ T_matrix = T_matrix.T
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric Overlap: ", xp.isclose(overlaps, overlaps.T).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
-
+'''
 print("E Values...")
 E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
 E_y_coeffs = calc_E_1d(exp, cen[:, 1], pow[:, 1])
 E_z_coeffs = calc_E_1d(exp, cen[:, 2], pow[:, 2])
-'''
+
 R_matrix, p, P = calc_R(exp, cen, pow, centers)
 '''
 nuclear = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
@@ -463,4 +507,5 @@ print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
 E_NN = nuclear_repulsion(Z, centers)
 '''
 print("Electron Repulsion...")
-calc_R_electron(pow, p, P)
+R, K, p_k = calc_R_electron(pow, p, P)
+S = elec_hermite_sum(E_x_coeffs, E_y_coeffs, E_z_coeffs, R, K, p_k)
