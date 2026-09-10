@@ -424,11 +424,11 @@ def elec_hermite_sum(Ex, Ey, Ez, R, K, p_k):
 
             term *= xp.power(-1, (tau[:, None, None] + phi[None, :, None] + chi[None, None, :])[None, None, None, ...])
             term *= R[i][j][
-                t[:, None, None, None, None, None] * tau[None, None, None, :, None, None],
-                u[None, :, None, None, None, None] * phi[None, None, None, None, :, None],
-                v[None, None, :, None, None, None] * chi[None, None, None, None, None, :]
+                t[:, None, None, None, None, None] + tau[None, None, None, :, None, None],
+                u[None, :, None, None, None, None] + phi[None, None, None, None, :, None],
+                v[None, None, :, None, None, None] + chi[None, None, None, None, None, :]
             ]
-            S[i, j] = term
+            S[i, j] = xp.sum(term)
 
     coeff = p_k[:, None]*p_k[None, :]*xp.sqrt(p_k[:, None] + p_k[None, :])
     coeff = 2*xp.power(xp.pi, 2.5)/coeff
@@ -443,12 +443,12 @@ print("Max power: ", xp.max(pow))
 print("Min power: ", xp.min(pow), "\n")
 
 print("Num Funcs: ", xp.size(exp), "\n")
-'''
+
 print("Coeffs...")
 normals = normal(exp, pow)
 normals = xp.outer(normals, normals)
 mult_coeffs = xp.outer(coeffs, coeffs)
-
+'''
 print("Overlap...")
 overlapx = overlap(exp, exp, cen[:, 0], cen[:, 0], pow[:, 0], pow[:, 0])
 overlapy = overlap(exp, exp, cen[:, 1], cen[:, 1], pow[:, 1], pow[:, 1])
@@ -509,3 +509,8 @@ E_NN = nuclear_repulsion(Z, centers)
 print("Electron Repulsion...")
 R, K, p_k = calc_R_electron(pow, p, P)
 S = elec_hermite_sum(E_x_coeffs, E_y_coeffs, E_z_coeffs, R, K, p_k)
+S *= xp.outer(normals.ravel(), normals.ravel())*xp.outer(mult_coeffs.ravel(), mult_coeffs.ravel())
+B = centers.shape[0]
+L = xp.size(exp)//B
+S = S.reshape(B, L, B, L, B, L, B, L)
+S = xp.sum(S, axis=(1, 3, 5, 7))
