@@ -1,10 +1,10 @@
 import numpy as np
 import cupy as cp
 import cupyx.scipy.special as mspecial
-import basis_set_exchange as bse
+#import basis_set_exchange as bse
 import json
-import ragged
-import awkward as ak
+#import ragged
+#import awkward as ak
 import time
 
 xp = cp
@@ -43,8 +43,8 @@ def gaussian(pos, center, alpha, powers):
 atoms = ["11", "20", "3", "16", "10", "12", "17"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [-1, 0, 0], [0, -1, 0]]
 '''
-atoms = ["1", "1"]
-centers = [[0, 0, 0], [1, 0, 0]]
+atoms = ["1"]
+centers = [[0, 0, 0]]
 
 exp = []
 coeffs = []
@@ -357,13 +357,14 @@ def calc_R_electron(pow, p, P):
     y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
     z_shape = pow[:, 2][:, None] + pow[:, 2][None, :] + 1
 
+    shapes = xp.stack((x_shape, y_shape, z_shape, max_hermite + 1), axis=-1)
+    shapes_host = xp.asnumpy(shapes)
+
     R_matrix = []
     for i in range(K):
-        print(f"{i}/{K}")
         R_row = []
         for j in range(K):
-            x_len, y_len, z_len = int(x_shape[i, j]), int(y_shape[i, j]), int(z_shape[i, j])
-            n_len = int(max_hermite[i, j]) + 1
+            x_len, y_len, z_len, n_len = shapes_host[i, j]
             R = xp.empty((x_len, y_len, z_len, n_len))
             n_arr = xp.arange(n_len)
             boys_t = xp.broadcast_to(T[i, j][None], (n_len,))
@@ -392,7 +393,7 @@ def calc_R_electron(pow, p, P):
     return R_matrix, K, p_k
 
 def elec_hermite_sum(Ex, Ey, Ez, R, K, p_k):
-    S = xp.empty((K, K))
+    ERI = xp.empty((K, K))
     N = int(xp.sqrt(K))
     for i in range(K):
         for j in range(K):
@@ -428,13 +429,13 @@ def elec_hermite_sum(Ex, Ey, Ez, R, K, p_k):
                 u[None, :, None, None, None, None] + phi[None, None, None, None, :, None],
                 v[None, None, :, None, None, None] + chi[None, None, None, None, None, :]
             ]
-            S[i, j] = xp.sum(term)
+            ERI[i, j] = xp.sum(term)
 
     coeff = p_k[:, None]*p_k[None, :]*xp.sqrt(p_k[:, None] + p_k[None, :])
     coeff = 2*xp.power(xp.pi, 2.5)/coeff
 
-    return coeff*S
-
+    return coeff*ERI
+'''
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
@@ -448,7 +449,7 @@ print("Coeffs...")
 normals = normal(exp, pow)
 normals = xp.outer(normals, normals)
 mult_coeffs = xp.outer(coeffs, coeffs)
-'''
+
 print("Overlap...")
 overlapx = overlap(exp, exp, cen[:, 0], cen[:, 0], pow[:, 0], pow[:, 0])
 overlapy = overlap(exp, exp, cen[:, 1], cen[:, 1], pow[:, 1], pow[:, 1])
@@ -482,14 +483,14 @@ T_matrix = T_matrix.T
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric Overlap: ", xp.isclose(overlaps, overlaps.T).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
-'''
+
 print("E Values...")
 E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
 E_y_coeffs = calc_E_1d(exp, cen[:, 1], pow[:, 1])
 E_z_coeffs = calc_E_1d(exp, cen[:, 2], pow[:, 2])
 
 R_matrix, p, P = calc_R(exp, cen, pow, centers)
-'''
+
 nuclear = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
 
 nuclear = nuclear.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
@@ -505,12 +506,144 @@ print("Symmetric V Matrix: ", xp.isclose(nuclear, nuclear.T).all())
 print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
 
 E_NN = nuclear_repulsion(Z, centers)
-'''
+
 print("Electron Repulsion...")
+t1 = time.time()
 R, K, p_k = calc_R_electron(pow, p, P)
-S = elec_hermite_sum(E_x_coeffs, E_y_coeffs, E_z_coeffs, R, K, p_k)
-S *= xp.outer(normals.ravel(), normals.ravel())*xp.outer(mult_coeffs.ravel(), mult_coeffs.ravel())
-B = centers.shape[0]
-L = xp.size(exp)//B
-S = S.reshape(B, L, B, L, B, L, B, L)
-S = xp.sum(S, axis=(1, 3, 5, 7))
+ERI = elec_hermite_sum(E_x_coeffs, E_y_coeffs, E_z_coeffs, R, K, p_k)
+ERI *= xp.outer(normals.ravel(), normals.ravel())*xp.outer(mult_coeffs.ravel(), mult_coeffs.ravel())
+B = exp_shape[0]
+L = exp_shape[1]
+ERI = ERI.reshape(B, L, B, L, B, L, B, L)
+ERI = xp.sum(ERI, axis=(1, 3, 5, 7))
+t2 = time.time()
+print(t2 - t1)
+'''
+
+source = f"""
+#include <math_constants.h>
+#define max_size 512
+
+__device__ double taylor(int m, double T) {{
+    double result = 0.0;
+    double T_pow = 1.0;
+    for (int k = 0; k < 40; ++k) {{
+        result += T_pow/(2.0*m + 2.0*k + 1.0);
+        T_pow *= -T/((double)k);
+    }}
+    return result;
+}}
+
+
+__device__ void boys(int max_m, double T, double* F) {{
+    if (T < 1e-14) {{
+        for (int m = 0; m < max_m; ++m) {{
+            F[m] = 1.0 / (2.0*m + 1.0);
+        }}
+    }}
+    else if (T < 6) {{
+        double val = taylor(max_m-1, T);
+        F[max_m-1] = val;
+        for (int m = max_m-2; m >= 0; --m) {{
+            val = 2.0*T*val + exp(-T);
+            val /= 2.0*m+1;
+            F[m] = val;
+        }}
+    }}
+    else {{
+        double val = sqrt(CUDART_PI)*erf(sqrt(T));
+        val /= 2.0*sqrt(T);
+        F[0] = val;
+        for (int m = 0; m < max_m-1; ++m) {{
+            val = (2.0*m+1.0)*val - exp(-T);
+            val /= 2.0*T;
+            F[m+1] = val;
+        }}
+    }}
+    return F;
+}}
+
+extern "C" __global__
+void eri_kernel(
+    int x_len,
+    int y_len,
+    int z_len,
+    int n_len,
+    const int* quad_i,
+    const int* quad_j,
+    const double* p_k,
+    const double* P_k,
+    double* R_output
+) {{
+    #define RIDX(x, y, z, n) (((x*y_len+y)*z_len+z)*n_len+n)
+
+    int q = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (q >= num_quads) {{
+        return;    
+    }}
+    
+    int i = quad_i[q];
+    int j = quad_j[q];
+    
+    p_i = p_k[i];
+    p_j = p_k[j];
+    
+    double rho = (p_i*p_j)/(p_i+p_j);
+    r_ij0 = P_k[3*i] - P_k[3*j];
+    r_ij1 = P_k[3*i+1] - P_k[3*j+1];
+    r_ij2 = P_k[3*i+2] - P_k[3*j+2];
+    T = rho*(r_ij0*r_ij0 + r_ij1*r_ij1 + r_ij2*r_ij2);
+    
+    required_idx = x_len*y_len*z_len*n_len;
+    R[max_size];
+    scale = 1.0
+    for (n = 0; n < n_len; ++n) {{
+        R[RIDX(0, 0, 0, n)] = scale*boys(n, T);
+        scale *= -2.0*rho;
+    }}
+    
+    for (int x = 0; x < x_len; ++x) {{
+        for (int y = 0; y < y_len; ++y) {{
+            for (int z = 0; z < z_len; ++z) {{
+                if (x == 0 && y == 0 && z == 0) {{
+                    continue;
+                }}
+                int valid_n = n_len - (x + y + z);
+                if (x != 0) {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = r_ij0 * R[RIDX(x-1, y, z, n+1)];
+                    }}
+                    if (x > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (x-1)*R[RIDX(x-2, y, z, n+1)];
+                        }}
+                    }}
+                }}
+                else if (y != 0) {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = r_ij1 * R[RIDX(x, y-1, z, n+1)];
+                    }}
+                    if (y > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (y-1)*R[RIDX(x, y-2, z, n+1)];
+                        }}
+                    }}
+                }}
+                else {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = r_ij2 * R[RIDX(x, y, z-1, n+1)];
+                    }}
+                    if (z > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (z-1)*R[RIDX(x, y, z-2, n+1)];
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    }}
+    
+    
+}}
+"""
