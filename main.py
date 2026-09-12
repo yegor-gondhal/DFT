@@ -435,6 +435,16 @@ def elec_hermite_sum(Ex, Ey, Ez, R, K, p_k):
     coeff = 2*xp.power(xp.pi, 2.5)/coeff
 
     return coeff*ERI
+
+def pack_E(E):
+    N = len(E)
+    rows = [E[a][b] for a in range(N) for b in range(N)]
+    lengths = np.asarray([row.size for row in rows])
+    stride = int(lengths.max())
+    packed = xp.zeros((N*N, stride))
+    for pair, row in enumerate(rows):
+        packed[pair, :row.size()] = row
+    return packed, stride
 '''
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
@@ -483,12 +493,12 @@ T_matrix = T_matrix.T
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric Overlap: ", xp.isclose(overlaps, overlaps.T).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
-
+'''
 print("E Values...")
 E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
 E_y_coeffs = calc_E_1d(exp, cen[:, 1], pow[:, 1])
 E_z_coeffs = calc_E_1d(exp, cen[:, 2], pow[:, 2])
-
+'''
 R_matrix, p, P = calc_R(exp, cen, pow, centers)
 
 nuclear = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
@@ -522,14 +532,14 @@ print(t2 - t1)
 
 source = f"""
 #include <math_constants.h>
-#define max_size 512
+#define max_size 1024
 
 __device__ double taylor(int m, double T) {{
-    double result = 0.0;
+    double result = 1.0 / (2.0 * m + 1.0);
     double T_pow = 1.0;
-    for (int k = 0; k < 40; ++k) {{
-        result += T_pow/(2.0*m + 2.0*k + 1.0);
+    for (int k = 1; k < 40; ++k) {{
         T_pow *= -T/((double)k);
+        result += T_pow/(2.0*m + 2.0*k + 1.0);
     }}
     return result;
 }}
@@ -560,7 +570,16 @@ __device__ void boys(int max_m, double T, double* F) {{
             F[m+1] = val;
         }}
     }}
-    return F;
+}}
+
+__device__ void convolution(double* E, int E_i, int E_j, int stride, double* C) {{
+    for (int t = 0; t < stride; ++t) {{
+        double pow = 1.0;
+        for (int tau = 0; tau < stride; ++tau) {{
+            C[t+tau] += E[E_i + t]*E_j[E_j + tau]*pow;
+            pow *= -1.0;
+        }}
+    }}
 }}
 
 extern "C" __global__
@@ -571,11 +590,19 @@ void eri_kernel(
     int n_len,
     const int* quad_i,
     const int* quad_j,
+    const int num_quads,
     const double* p_k,
     const double* P_k,
-    double* R_output
+    const double* Ex,
+    const double* Ey,
+    const double* Ez,
+    const int sx,
+    const int sy,
+    const int sz,
+    double* eri_output
 ) {{
     #define RIDX(x, y, z, n) (((x*y_len+y)*z_len+z)*n_len+n)
+    #define max_conv 13
 
     int q = blockIdx.x * blockDim.x + threadIdx.x;
     
@@ -586,20 +613,21 @@ void eri_kernel(
     int i = quad_i[q];
     int j = quad_j[q];
     
-    p_i = p_k[i];
-    p_j = p_k[j];
+    double p_i = p_k[i];
+    double p_j = p_k[j];
     
     double rho = (p_i*p_j)/(p_i+p_j);
-    r_ij0 = P_k[3*i] - P_k[3*j];
-    r_ij1 = P_k[3*i+1] - P_k[3*j+1];
-    r_ij2 = P_k[3*i+2] - P_k[3*j+2];
-    T = rho*(r_ij0*r_ij0 + r_ij1*r_ij1 + r_ij2*r_ij2);
+    double r_ij0 = P_k[3*i] - P_k[3*j];
+    double r_ij1 = P_k[3*i+1] - P_k[3*j+1];
+    double r_ij2 = P_k[3*i+2] - P_k[3*j+2];
+    double T = rho*(r_ij0*r_ij0 + r_ij1*r_ij1 + r_ij2*r_ij2);
     
-    required_idx = x_len*y_len*z_len*n_len;
+    int required_idx = x_len*y_len*z_len*n_len;
     R[max_size];
-    scale = 1.0
+    boys(n_len, T, F);
+    double scale = 1.0;
     for (n = 0; n < n_len; ++n) {{
-        R[RIDX(0, 0, 0, n)] = scale*boys(n, T);
+        R[RIDX(0, 0, 0, n)] = scale*F[n];
         scale *= -2.0*rho;
     }}
     
@@ -644,6 +672,25 @@ void eri_kernel(
         }}
     }}
     
+    double Cx[max_conv];
+    double Cy[max_conv];
+    double Cz[max_conv];
     
+    convolution(Ex, i*sx, j*sx, sx);
+    convolution(Ey, i*sy, j*sy, sy);
+    convolution(Ez, i*sz, j*sz, sz);
+    
+    double integral = 0.0;
+    for (int x = 0; x < x_len; ++x) {{
+        for (int y = 0; y < y_len; ++y) {{
+            double cxy = Cx[x]*Cy[y];
+            for (int z = 0; z < z_len; ++z) {{
+                integral += cxy*Cz[z]*R[RIDX(x, y, z, 0)];
+            }}
+        }}
+    }}
+    
+    double term = 2.0 * CUDART_PI * CUDART_PI * sqrt(CUDART_PI);
+    integral *= term / (p_i * p_j * sqrt(p_i + p_j));
 }}
 """
