@@ -762,9 +762,13 @@ print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
 E_NN = nuclear_repulsion(Z, centers)
 elec_count = xp.sum(Z)
 
-eig_vals, U = xp.linalg.eig(overlaps)
-s = xp.diag(eig_vals)
+eig_vals, U = xp.linalg.eigh(overlaps)
+s = xp.power(eig_vals, -0.5)
+s = xp.diag(s)
 U_t = U.T
-X = U@xp.power(s, -0.5)@U_t
-print("Symmetric Orthogonalizer: ", xp.isclose(X.T@overlaps@X, xp.identity(overlaps.shape[0])).all())
+X = U @ s @ U_t
+X_t = X.T
+print("Symmetric Orthogonalizer: ", xp.isclose(X_t@overlaps@X, xp.identity(overlaps.shape[0])).all())
 
+F = T_matrix + nuclear
+F_prime = X_t @ F @ X
