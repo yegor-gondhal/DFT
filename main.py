@@ -45,6 +45,9 @@ centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 '''
 atoms = ["3"]
 centers = [[0, 0, 0]]
+unpaired_elec = [1]
+
+unpaired_elec = xp.asarray(unpaired_elec)
 
 exp = []
 coeffs = []
@@ -636,6 +639,32 @@ def pack_E(E):
         packed[pair, :row.size] = row
     return packed.ravel(), xp.asarray(lengths, dtype=xp.int32), stride
 
+
+def total_spin(unpaired_elec):
+    N = int(xp.size(unpaired_elec))
+    pairs = xp.stack([unpaired_elec, -unpaired_elec], axis=-1)
+    total_sum = 0
+    for i in range(N):
+        shape = [1] * N
+        shape[i] = 2
+        reshaped_pair = pairs[i].reshape(shape)
+        total_sum = total_sum + reshaped_pair
+
+    total_sum = xp.where(total_sum < 0, 1000, total_sum)
+    return xp.min(total_sum)/2
+
+def UHF_density(C, N_a, N_b):
+    arr_a = xp.arange(1, N_a+1)
+    arr_b = xp.arange(1, N_b+1)
+
+    C_a = C[:, arr_a]
+    P_a = xp.sum(C_a[:, None, :] * C_a[None, :, :], axis=-1)
+
+    C_b = C[:, arr_b]
+    P_b = xp.sum(C_b[:, None, :] * C_b[None, :, :], axis=-1)
+
+    return P_a, P_b
+
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
@@ -678,14 +707,6 @@ T_matrix = T_matrix.T
 T_matrix = T_matrix.reshape(-1, exp_shape[0], exp_shape[1])
 T_matrix = xp.sum(T_matrix, axis=-1)
 T_matrix = T_matrix.T
-
-
-print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
-print("Symmetric Overlap: ", xp.isclose(overlaps, overlaps.T).all())
-print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
-
-
-
 
 print("E Values...")
 E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
@@ -756,9 +777,6 @@ nuclear = nuclear.T
 
 H = T_matrix + nuclear
 
-print("Symmetric V Matrix: ", xp.isclose(nuclear, nuclear.T).all())
-print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
-
 E_NN = nuclear_repulsion(Z, centers)
 elec_count = xp.sum(Z)
 
@@ -768,7 +786,35 @@ s = xp.diag(s)
 U_t = U.T
 X = U @ s @ U_t
 X_t = X.T
-print("Symmetric Orthogonalizer: ", xp.isclose(X_t@overlaps@X, xp.identity(overlaps.shape[0])).all())
 
 F = T_matrix + nuclear
 F_prime = X_t @ F @ X
+orb_energy, C_prime = xp.linalg.eigh(F_prime)
+C = X @ C_prime
+
+total_spin = total_spin(unpaired_elec)
+mult = 2*total_spin + 1
+N_a = (elec_count + mult - 1)/2
+N_b = (elec_count - mult + 1)/2
+N_e = N_a + N_b
+
+P_a, P_b = UHF_density(C, N_a, N_b)
+P = P_a + P_b
+
+"""
+Complete checks:
+
+print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
+print("Symmetric Overlap: ", xp.isclose(overlaps, overlaps.T).all())
+print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
+print("Symmetric V Matrix: ", xp.isclose(nuclear, nuclear.T).all())
+print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
+print("Symmetric Orthogonalizer: ", xp.isclose(X_t@overlaps@X, xp.identity(overlaps.shape[0])).all())
+print("C: ", xp.isclose(C.T@overlaps@C, xp.identity(overlaps.shape[0])).all())
+print("F_prime: ", xp.isclose(F_prime, F_prime.T).all())
+print("C_prime: ", xp.isclose(C_prime @ C_prime.T, xp.identity(C_prime.shape[0])).all())
+print("Eigenvalue Equation: ", xp.isclose(F @ C, (overlaps @ C) * orb_energy[:, None]).all())
+print("Electron Count A: ", xp.isclose(xp.trace(P_a @ overlaps), N_a))
+print("Electron Count B: ", xp.isclose(xp.trace(P_b @ overlaps), N_b))
+print("Electron Count Total: ", xp.isclose(xp.trace((P_a + P_b) @ overlaps), N_e))
+"""
