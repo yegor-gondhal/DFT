@@ -43,7 +43,7 @@ def gaussian(pos, center, alpha, powers):
 atoms = ["11", "20", "3", "16", "10", "12", "17"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [-1, 0, 0], [0, -1, 0]]
 '''
-atoms = ["1"]
+atoms = ["3"]
 centers = [[0, 0, 0]]
 
 exp = []
@@ -436,6 +436,193 @@ def elec_hermite_sum(Ex, Ey, Ez, R, K, p_k):
 
     return coeff*ERI
 
+
+source = f"""
+#include <math_constants.h>
+#define max_size 1024
+
+__device__ double taylor(int m, double T) {{
+    double result = 1.0 / (2.0 * m + 1.0);
+    double T_pow = 1.0;
+    for (int k = 1; k < 40; ++k) {{
+        T_pow *= -T/((double)k);
+        result += T_pow/(2.0*m + 2.0*k + 1.0);
+    }}
+    return result;
+}}
+
+
+__device__ void boys(int max_m, double T, double* F) {{
+    double exp_neg_T = exp(-T);
+    if (T < 1e-14) {{
+        for (int m = 0; m < max_m; ++m) {{
+            F[m] = 1.0 / (2.0*m + 1.0);
+        }}
+    }}
+    else if (T < 6) {{
+        double val = taylor(max_m-1, T);
+        F[max_m-1] = val;
+        for (int m = max_m-2; m >= 0; --m) {{
+            val = 2.0*T*val + exp_neg_T;
+            val /= 2.0*m+1;
+            F[m] = val;
+        }}
+    }}
+    else {{
+        double val = sqrt(CUDART_PI)*erf(sqrt(T));
+        val /= 2.0*sqrt(T);
+        F[0] = val;
+        for (int m = 0; m < max_m-1; ++m) {{
+            val = (2.0*m+1.0)*val - exp_neg_T;
+            val /= 2.0*T;
+            F[m+1] = val;
+        }}
+    }}
+}}
+
+__device__ void convolution(const double* E, int E_i, int E_j, int len_i, int len_j, double* C) {{
+
+    int out_len = len_i + len_j - 1;
+    for (int s = 0; s < out_len; ++s) {{
+        C[s] = 0.0;
+    }}
+
+    for (int t = 0; t < len_i; ++t) {{
+        for (int tau = 0; tau < len_j; ++tau) {{
+            double sign = (tau & 1) ? -1.0 : 1.0;
+            C[t+tau] += E[E_i + t]*E[E_j + tau]*sign;
+        }}
+    }}
+}}
+
+extern "C" __global__
+void eri_kernel(
+    const int* quad_i,
+    const int* quad_j,
+    const int num_quads,
+    const double* p_k,
+    const double* P_k,
+    const double* Ex,
+    const double* Ey,
+    const double* Ez,
+    const int* nx,
+    const int* ny,
+    const int* nz,
+    const int sx,
+    const int sy,
+    const int sz,
+    double* eri_output
+) {{
+    #define max_conv 13
+    #define max_r 2048
+    #define max_boys 13
+
+    int q = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (q >= num_quads) {{
+        return;    
+    }}
+
+    int i = quad_i[q];
+    int j = quad_j[q];
+
+    double p_i = p_k[i];
+    double p_j = p_k[j];
+
+    int nxi = nx[i];
+    int nxj = nx[j];
+    int nyi = ny[i];
+    int nyj = ny[j];
+    int nzi = nz[i];
+    int nzj = nz[j];
+
+    int x_len = nxi + nxj - 1;
+    int y_len = nyi + nyj - 1;
+    int z_len = nzi + nzj - 1;
+    int n_len = x_len + y_len + z_len - 2;
+
+    #define RIDX(x, y, z, n) (((x*y_len+y)*z_len+z)*n_len+n)
+
+    double rho = (p_i*p_j)/(p_i+p_j);
+    double r_ij0 = P_k[3*i] - P_k[3*j];
+    double r_ij1 = P_k[3*i+1] - P_k[3*j+1];
+    double r_ij2 = P_k[3*i+2] - P_k[3*j+2];
+    double T = rho*(r_ij0*r_ij0 + r_ij1*r_ij1 + r_ij2*r_ij2);
+
+    double R[max_r];
+    double F[max_boys];
+    boys(n_len, T, F);
+    double scale = 1.0;
+    for (int n = 0; n < n_len; ++n) {{
+        R[RIDX(0, 0, 0, n)] = scale*F[n];
+        scale *= -2.0*rho;
+    }}
+
+    for (int x = 0; x < x_len; ++x) {{
+        for (int y = 0; y < y_len; ++y) {{
+            for (int z = 0; z < z_len; ++z) {{
+                if (x == 0 && y == 0 && z == 0) {{
+                    continue;
+                }}
+                int valid_n = n_len - (x + y + z);
+                if (x != 0) {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = r_ij0 * R[RIDX(x-1, y, z, n+1)];
+                    }}
+                    if (x > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (x-1)*R[RIDX(x-2, y, z, n+1)];
+                        }}
+                    }}
+                }}
+                else if (y != 0) {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = r_ij1 * R[RIDX(x, y-1, z, n+1)];
+                    }}
+                    if (y > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (y-1)*R[RIDX(x, y-2, z, n+1)];
+                        }}
+                    }}
+                }}
+                else {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = r_ij2 * R[RIDX(x, y, z-1, n+1)];
+                    }}
+                    if (z > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (z-1)*R[RIDX(x, y, z-2, n+1)];
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    }}
+
+    double Cx[max_conv];
+    double Cy[max_conv];
+    double Cz[max_conv];
+
+    convolution(Ex, i*sx, j*sx, nxi, nxj, Cx);
+    convolution(Ey, i*sy, j*sy, nyi, nyj, Cy);
+    convolution(Ez, i*sz, j*sz, nzi, nzj, Cz);
+
+    double integral = 0.0;
+    for (int x = 0; x < x_len; ++x) {{
+        for (int y = 0; y < y_len; ++y) {{
+            double cxy = Cx[x]*Cy[y];
+            for (int z = 0; z < z_len; ++z) {{
+                integral += cxy*Cz[z]*R[RIDX(x, y, z, 0)];
+            }}
+        }}
+    }}
+
+    double term = 2.0 * CUDART_PI * CUDART_PI * sqrt(CUDART_PI);
+    integral *= term / (p_i * p_j * sqrt(p_i + p_j));
+    eri_output[q] = integral;
+}}
+"""
+
 def pack_E(E):
     N = len(E)
     rows = [E[a][b] for a in range(N) for b in range(N)]
@@ -443,8 +630,8 @@ def pack_E(E):
     stride = int(lengths.max())
     packed = xp.zeros((N*N, stride))
     for pair, row in enumerate(rows):
-        packed[pair, :row.size()] = row
-    return packed, stride
+        packed[pair, :row.size] = row
+    return packed.ravel(), xp.asarray(lengths), stride
 '''
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
@@ -494,13 +681,54 @@ print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric Overlap: ", xp.isclose(overlaps, overlaps.T).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
 '''
+R_matrix, p, P = calc_R(exp, cen, pow, centers)
 print("E Values...")
 E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
 E_y_coeffs = calc_E_1d(exp, cen[:, 1], pow[:, 1])
 E_z_coeffs = calc_E_1d(exp, cen[:, 2], pow[:, 2])
-'''
-R_matrix, p, P = calc_R(exp, cen, pow, centers)
 
+Ex, nx, sx = pack_E(E_x_coeffs)
+Ey, ny, sy = pack_E(E_y_coeffs)
+Ez, nz, sz = pack_E(E_z_coeffs)
+
+
+N = int(xp.size(exp))
+K = N**2
+quad_i, quad_j = xp.tril_indices(K)
+quad_i = quad_i.astype(xp.int32)
+quad_j = quad_j.astype(xp.int32)
+num_quads = quad_i.size
+p_k = xp.ascontiguousarray(p.reshape(-1))
+P_k = xp.ascontiguousarray(P.reshape(-1, 3))
+eri_values = xp.empty((num_quads), dtype=xp.float64)
+eri_kernel = cp.RawKernel(source, "eri_kernel")
+
+threads = 128
+blocks = (num_quads + threads - 1) // threads
+print("Beginning Kernel...")
+eri_kernel((blocks,), (threads,), (
+    quad_i,
+    quad_j,
+    num_quads,
+    p_k,
+    P_k,
+    Ex,
+    Ey,
+    Ez,
+    nx,
+    ny,
+    nz,
+    sx,
+    sy,
+    sz,
+    eri_values
+))
+cp.cuda.runtime.deviceSynchronize()
+
+ERI = xp.empty((K, K), dtype=xp.float64)
+ERI[quad_i, quad_j] = eri_values
+ERI[quad_j, quad_i] = eri_values
+'''
 nuclear = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
 
 nuclear = nuclear.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
@@ -529,168 +757,3 @@ ERI = xp.sum(ERI, axis=(1, 3, 5, 7))
 t2 = time.time()
 print(t2 - t1)
 '''
-
-source = f"""
-#include <math_constants.h>
-#define max_size 1024
-
-__device__ double taylor(int m, double T) {{
-    double result = 1.0 / (2.0 * m + 1.0);
-    double T_pow = 1.0;
-    for (int k = 1; k < 40; ++k) {{
-        T_pow *= -T/((double)k);
-        result += T_pow/(2.0*m + 2.0*k + 1.0);
-    }}
-    return result;
-}}
-
-
-__device__ void boys(int max_m, double T, double* F) {{
-    if (T < 1e-14) {{
-        for (int m = 0; m < max_m; ++m) {{
-            F[m] = 1.0 / (2.0*m + 1.0);
-        }}
-    }}
-    else if (T < 6) {{
-        double val = taylor(max_m-1, T);
-        F[max_m-1] = val;
-        for (int m = max_m-2; m >= 0; --m) {{
-            val = 2.0*T*val + exp(-T);
-            val /= 2.0*m+1;
-            F[m] = val;
-        }}
-    }}
-    else {{
-        double val = sqrt(CUDART_PI)*erf(sqrt(T));
-        val /= 2.0*sqrt(T);
-        F[0] = val;
-        for (int m = 0; m < max_m-1; ++m) {{
-            val = (2.0*m+1.0)*val - exp(-T);
-            val /= 2.0*T;
-            F[m+1] = val;
-        }}
-    }}
-}}
-
-__device__ void convolution(double* E, int E_i, int E_j, int stride, double* C) {{
-    for (int t = 0; t < stride; ++t) {{
-        double pow = 1.0;
-        for (int tau = 0; tau < stride; ++tau) {{
-            C[t+tau] += E[E_i + t]*E_j[E_j + tau]*pow;
-            pow *= -1.0;
-        }}
-    }}
-}}
-
-extern "C" __global__
-void eri_kernel(
-    int x_len,
-    int y_len,
-    int z_len,
-    int n_len,
-    const int* quad_i,
-    const int* quad_j,
-    const int num_quads,
-    const double* p_k,
-    const double* P_k,
-    const double* Ex,
-    const double* Ey,
-    const double* Ez,
-    const int sx,
-    const int sy,
-    const int sz,
-    double* eri_output
-) {{
-    #define RIDX(x, y, z, n) (((x*y_len+y)*z_len+z)*n_len+n)
-    #define max_conv 13
-
-    int q = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (q >= num_quads) {{
-        return;    
-    }}
-    
-    int i = quad_i[q];
-    int j = quad_j[q];
-    
-    double p_i = p_k[i];
-    double p_j = p_k[j];
-    
-    double rho = (p_i*p_j)/(p_i+p_j);
-    double r_ij0 = P_k[3*i] - P_k[3*j];
-    double r_ij1 = P_k[3*i+1] - P_k[3*j+1];
-    double r_ij2 = P_k[3*i+2] - P_k[3*j+2];
-    double T = rho*(r_ij0*r_ij0 + r_ij1*r_ij1 + r_ij2*r_ij2);
-    
-    int required_idx = x_len*y_len*z_len*n_len;
-    R[max_size];
-    boys(n_len, T, F);
-    double scale = 1.0;
-    for (n = 0; n < n_len; ++n) {{
-        R[RIDX(0, 0, 0, n)] = scale*F[n];
-        scale *= -2.0*rho;
-    }}
-    
-    for (int x = 0; x < x_len; ++x) {{
-        for (int y = 0; y < y_len; ++y) {{
-            for (int z = 0; z < z_len; ++z) {{
-                if (x == 0 && y == 0 && z == 0) {{
-                    continue;
-                }}
-                int valid_n = n_len - (x + y + z);
-                if (x != 0) {{
-                    for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij0 * R[RIDX(x-1, y, z, n+1)];
-                    }}
-                    if (x > 1) {{
-                        for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (x-1)*R[RIDX(x-2, y, z, n+1)];
-                        }}
-                    }}
-                }}
-                else if (y != 0) {{
-                    for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij1 * R[RIDX(x, y-1, z, n+1)];
-                    }}
-                    if (y > 1) {{
-                        for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (y-1)*R[RIDX(x, y-2, z, n+1)];
-                        }}
-                    }}
-                }}
-                else {{
-                    for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij2 * R[RIDX(x, y, z-1, n+1)];
-                    }}
-                    if (z > 1) {{
-                        for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (z-1)*R[RIDX(x, y, z-2, n+1)];
-                        }}
-                    }}
-                }}
-            }}
-        }}
-    }}
-    
-    double Cx[max_conv];
-    double Cy[max_conv];
-    double Cz[max_conv];
-    
-    convolution(Ex, i*sx, j*sx, sx);
-    convolution(Ey, i*sy, j*sy, sy);
-    convolution(Ez, i*sz, j*sz, sz);
-    
-    double integral = 0.0;
-    for (int x = 0; x < x_len; ++x) {{
-        for (int y = 0; y < y_len; ++y) {{
-            double cxy = Cx[x]*Cy[y];
-            for (int z = 0; z < z_len; ++z) {{
-                integral += cxy*Cz[z]*R[RIDX(x, y, z, 0)];
-            }}
-        }}
-    }}
-    
-    double term = 2.0 * CUDART_PI * CUDART_PI * sqrt(CUDART_PI);
-    integral *= term / (p_i * p_j * sqrt(p_i + p_j));
-}}
-"""
