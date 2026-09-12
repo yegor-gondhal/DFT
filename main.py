@@ -40,8 +40,8 @@ def gaussian(pos, center, alpha, powers):
         xp.exp(-alpha*r2)
     )
 '''
-atoms = ["11", "20", "3", "16", "10", "12", "17"]
-centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [-1, 0, 0], [0, -1, 0]]
+atoms = ["30", "30", "30"]
+centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 '''
 atoms = ["3"]
 centers = [[0, 0, 0]]
@@ -362,6 +362,7 @@ def calc_R_electron(pow, p, P):
 
     R_matrix = []
     for i in range(K):
+        #print(i, "/", K)
         R_row = []
         for j in range(K):
             x_len, y_len, z_len, n_len = shapes_host[i, j]
@@ -396,6 +397,7 @@ def elec_hermite_sum(Ex, Ey, Ez, R, K, p_k):
     ERI = xp.empty((K, K))
     N = int(xp.sqrt(K))
     for i in range(K):
+        #print(i, "/", K)
         for j in range(K):
             a = i // N
             b = i % N
@@ -540,6 +542,7 @@ void eri_kernel(
     int y_len = nyi + nyj - 1;
     int z_len = nzi + nzj - 1;
     int n_len = x_len + y_len + z_len - 2;
+    
 
     #define RIDX(x, y, z, n) (((x*y_len+y)*z_len+z)*n_len+n)
 
@@ -626,13 +629,13 @@ void eri_kernel(
 def pack_E(E):
     N = len(E)
     rows = [E[a][b] for a in range(N) for b in range(N)]
-    lengths = np.asarray([row.size for row in rows])
+    lengths = np.asarray([row.size for row in rows], dtype=np.int32)
     stride = int(lengths.max())
-    packed = xp.zeros((N*N, stride))
+    packed = xp.zeros((N*N, stride), dtype=xp.float64)
     for pair, row in enumerate(rows):
         packed[pair, :row.size] = row
-    return packed.ravel(), xp.asarray(lengths), stride
-'''
+    return packed.ravel(), xp.asarray(lengths, dtype=xp.int32), stride
+
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
@@ -680,28 +683,35 @@ T_matrix = T_matrix.T
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
 print("Symmetric Overlap: ", xp.isclose(overlaps, overlaps.T).all())
 print("Symmetric T Matrix: ", xp.isclose(T_matrix, T_matrix.T).all())
-'''
-R_matrix, p, P = calc_R(exp, cen, pow, centers)
+
+
+
+
 print("E Values...")
 E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
 E_y_coeffs = calc_E_1d(exp, cen[:, 1], pow[:, 1])
 E_z_coeffs = calc_E_1d(exp, cen[:, 2], pow[:, 2])
 
+R_matrix, p, P = calc_R(exp, cen, pow, centers)
+
+print("Packing E...")
 Ex, nx, sx = pack_E(E_x_coeffs)
 Ey, ny, sy = pack_E(E_y_coeffs)
 Ez, nz, sz = pack_E(E_z_coeffs)
 
-
+print("Setting Up Kernel...")
 N = int(xp.size(exp))
 K = N**2
 quad_i, quad_j = xp.tril_indices(K)
 quad_i = quad_i.astype(xp.int32)
 quad_j = quad_j.astype(xp.int32)
 num_quads = quad_i.size
-p_k = xp.ascontiguousarray(p.reshape(-1))
-P_k = xp.ascontiguousarray(P.reshape(-1, 3))
+p_k = xp.ascontiguousarray(p.reshape(-1), dtype=xp.float64)
+P_k = xp.ascontiguousarray(P.reshape(-1, 3), dtype=xp.float64)
 eri_values = xp.empty((num_quads), dtype=xp.float64)
 eri_kernel = cp.RawKernel(source, "eri_kernel")
+eri_kernel.compile()
+cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize,32768 )
 
 threads = 128
 blocks = (num_quads + threads - 1) // threads
@@ -709,7 +719,7 @@ print("Beginning Kernel...")
 eri_kernel((blocks,), (threads,), (
     quad_i,
     quad_j,
-    num_quads,
+    np.int32(num_quads),
     p_k,
     P_k,
     Ex,
@@ -724,13 +734,19 @@ eri_kernel((blocks,), (threads,), (
     eri_values
 ))
 cp.cuda.runtime.deviceSynchronize()
-
+print("Processing ERI...")
 ERI = xp.empty((K, K), dtype=xp.float64)
 ERI[quad_i, quad_j] = eri_values
 ERI[quad_j, quad_i] = eri_values
-'''
-nuclear = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
+ERI *= xp.outer(normals.ravel(), normals.ravel())*xp.outer(mult_coeffs.ravel(), mult_coeffs.ravel())
+B = exp_shape[0]
+L = exp_shape[1]
+ERI = ERI.reshape(B, L, B, L, B, L, B, L)
+ERI = xp.sum(ERI, axis=(1, 3, 5, 7))
 
+
+print("Nuclear Attraction...")
+nuclear = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
 nuclear = nuclear.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
 nuclear = xp.sum(nuclear, axis=-1)
 nuclear = nuclear.T
@@ -744,16 +760,11 @@ print("Symmetric V Matrix: ", xp.isclose(nuclear, nuclear.T).all())
 print("Symmetric H Matrix: ", xp.isclose(H, H.T).all())
 
 E_NN = nuclear_repulsion(Z, centers)
+elec_count = xp.sum(Z)
 
-print("Electron Repulsion...")
-t1 = time.time()
-R, K, p_k = calc_R_electron(pow, p, P)
-ERI = elec_hermite_sum(E_x_coeffs, E_y_coeffs, E_z_coeffs, R, K, p_k)
-ERI *= xp.outer(normals.ravel(), normals.ravel())*xp.outer(mult_coeffs.ravel(), mult_coeffs.ravel())
-B = exp_shape[0]
-L = exp_shape[1]
-ERI = ERI.reshape(B, L, B, L, B, L, B, L)
-ERI = xp.sum(ERI, axis=(1, 3, 5, 7))
-t2 = time.time()
-print(t2 - t1)
-'''
+eig_vals, U = xp.linalg.eig(overlaps)
+s = xp.diag(eig_vals)
+U_t = U.T
+X = U@xp.power(s, -0.5)@U_t
+print("Symmetric Orthogonalizer: ", xp.isclose(X.T@overlaps@X, xp.identity(overlaps.shape[0])).all())
+
