@@ -6,6 +6,7 @@ import json
 #import ragged
 #import awkward as ak
 import time
+import math
 
 xp = cp
 
@@ -680,8 +681,8 @@ print("Min power: ", xp.min(pow), "\n")
 print("Num Funcs: ", xp.size(exp), "\n")
 
 print("Coeffs...")
-normals = normal(exp, pow)
-normals = xp.outer(normals, normals)
+normals_1d = normal(exp, pow)
+normals = xp.outer(normals_1d, normals_1d)
 mult_coeffs = xp.outer(coeffs, coeffs)
 
 print("Overlap...")
@@ -785,6 +786,7 @@ H_matrix = T_matrix + V_matrix
 E_NN = nuclear_repulsion(Z, centers)
 elec_count = xp.sum(Z) - xp.sum(net_charge)
 
+print("Setting Up SCF...")
 eig_vals, U = xp.linalg.eigh(overlaps)
 s = xp.power(eig_vals, -0.5)
 s = xp.diag(s)
@@ -795,19 +797,30 @@ X_t = X.T
 F = T_matrix + V_matrix
 F_prime = X_t @ F @ X
 orb_energy, C_prime = xp.linalg.eigh(F_prime)
-C_a = X @ C_prime
-C_b = C_a
+C = X @ C_prime
+C_a, C_b = C, C
 
 total_spin = total_spin(unpaired_elec)
 mult = 2*total_spin + 1
 N_a = (elec_count + mult - 1)/2
 N_b = (elec_count - mult + 1)/2
 N_e = N_a + N_b
-E_prev = -1000
-while True:
-    P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
-    P = P_a + P_b
 
+print("SCF...")
+Fock_a = 0
+Fock_b = 0
+P = 0
+J_matrix = 0
+K_a = 0
+K_b = 0
+
+orb_energy_a = 0
+orb_energy_b = 0
+P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
+E_total = -1000
+exit = 0
+while True:
+    P = P_a + P_b
     J_matrix = xp.sum(P[None, None, :, :] * ERI, axis=(-1, -2))
     K_a = xp.sum(P_a[None, :, None, :] * ERI, axis=(1, 3))
     K_b = xp.sum(P_b[None, :, None, :] * ERI, axis=(1, 3))
@@ -815,31 +828,82 @@ while True:
     Fock_b = H_matrix + J_matrix - K_b
 
     E_elec = 0.5*xp.sum(P*H_matrix + P_a*Fock_a + P_b*Fock_b)
-    E_total = E_elec + E_NN
+    E_total_new = E_elec + E_NN
+    delta_E = xp.abs(E_total_new - E_total)
 
-    if xp.abs(E_total - E_prev) < 1e-2:
+    if exit == 1:
         break
 
-    E_prev = E_total
     Fock_a_prime = X_t @ Fock_a @ X
     Fock_b_prime = X_t @ Fock_b @ X
     orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
     orb_energy_b, C_b_prime = xp.linalg.eigh(Fock_b_prime)
-    C_a = X @ C_a_prime
-    C_b = X @ C_b_prime
+    C_a_new = X @ C_a_prime
+    C_b_new = X @ C_b_prime
+    P_a_new, P_b_new = UHF_density(C_a_new, C_b_new, N_a, N_b)
+    delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
+
+    if delta_E < 1e-8 and delta_P < 1e-6:
+        exit = 1
+
+    E_total = E_total_new
+    P_a = P_a_new
+    P_b = P_b_new
+
+  #print(delta_E, delta_P)
+
+
+print("Initializing Grid...")
+padding = 6
+grid_spacing = 0.2
+minx = float(xp.min(centers[:, 0]) - padding)
+maxx = float(xp.max(centers[:, 0]) + padding)
+miny = float(xp.min(centers[:, 1]) - padding)
+maxy = float(xp.max(centers[:, 1]) + padding)
+minz = float(xp.min(centers[:, 2]) - padding)
+maxz = float(xp.max(centers[:, 2]) + padding)
+
+gridx = xp.linspace(minx, maxx, math.ceil((maxx-minx)/grid_spacing)+1)
+gridy = xp.linspace(miny, maxy, math.ceil((maxy-miny)/grid_spacing)+1)
+gridz = xp.linspace(minz, maxz, math.ceil((maxz-minz)/grid_spacing)+1)
+X_shape = xp.size(gridx)
+Y_shape = xp.size(gridy)
+Z_shape = xp.size(gridz)
+gridx = xp.broadcast_to(gridx[:, None, None], (X_shape, Y_shape, Z_shape))
+gridy = xp.broadcast_to(gridy[None, :, None], (X_shape, Y_shape, Z_shape))
+gridz = xp.broadcast_to(gridz[None, None, :], (X_shape, Y_shape, Z_shape))
+grid = xp.stack((gridx, gridy, gridz), axis=-1)
+grid_shape = grid.shape[:-1]
+grid = grid.reshape(-1, 3)
+grid_len = grid.shape[0]
+
+print("Evaluating Grid...")
+eval_grid = (coeffs[:, None]
+                  *normals_1d[:, None]
+                  *xp.power(grid[:, 0][None, :] - cen[:, 0][:, None], pow[:, 0][:, None])
+                  *xp.power(grid[:, 1][None, :] - cen[:, 1][:, None], pow[:, 1][:, None])
+                  *xp.power(grid[:, 2][None, :] - cen[:, 2][:, None], pow[:, 2][:, None])
+                  *xp.exp(-exp[:, None] * xp.sum(xp.square(grid[None, :, :] - cen[:, None, :]), axis=-1))
+)
+print("Reshaping...")
+eval_grid = eval_grid.reshape(-1, 3, grid_len)
+eval_grid = xp.sum(eval_grid, axis=1)
+
+print("Densities...")
+alpha_density = xp.sum(P_a[:, :, None]*eval_grid[:, None, :]*eval_grid[None, :, :], axis=(0, 1))
+beta_density = xp.sum(P_b[:, :, None]*eval_grid[:, None, :]*eval_grid[None, :, :], axis=(0, 1))
+total_density = alpha_density + beta_density
+spin_density = alpha_density - beta_density
 
 
 
-
-
-'''
 #Complete checks:
 print("\n")
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
-print("Overlap Symmetry: ", sym(overlaps)
-print("T Matrix Symmetry: ", sym(T_matrix)
+print("Overlap Symmetry: ", sym(overlaps))
+print("T Matrix Symmetry: ", sym(T_matrix))
 print("T Matrix Positive Semidefinite: ", (xp.linalg.eigh(T_matrix)[0] > -1e-10).all())
-print("V Matrix Symmetry: ", sym(V_matrix)
+print("V Matrix Symmetry: ", sym(V_matrix))
 print("V Matrix Negative Semidefinite: ", (xp.linalg.eigh(V_matrix)[0] < 1e-10).all())
 print("H Matrix Symmetry: ", sym(H_matrix))
 print("Nuclear Repulsion Nonnegative: ", E_NN >= 0)
@@ -877,6 +941,17 @@ print("UHF Density Matrix B Rank: ", xp.linalg.matrix_rank(P_b) == N_b)
 print("Coulomb Matrix Symmetry: ", sym(J_matrix))
 print("Exchange Matrix A Symmetry: ", sym(K_a))
 print("Exchange Matrix B Symmetry: ", sym(K_b))
-print("Fock Matrix A Symmetry: ", sym(F_a))
-print("Fock Matrix B Symmetry: ", sym(F_b))
-'''
+print("Fock Matrix A Symmetry: ", sym(Fock_a))
+print("Fock Matrix B Symmetry: ", sym(Fock_b))
+print("C_a Overlap Normal: ", xp.isclose(C_a.T @ overlaps @ C_a, xp.identity(C_a.shape[0])).all())
+print("C_b Overlap Normal: ", xp.isclose(C_b.T @ overlaps @ C_b, xp.identity(C_b.shape[0])).all())
+print("Eigenvalue Fock A: ", xp.isclose(Fock_a @ C_a, overlaps @ C_a @ xp.diag(orb_energy_a)).all())
+print("Eigenvalue Fock B: ", xp.isclose(Fock_b @ C_b, overlaps @ C_b @ xp.diag(orb_energy_b)).all())
+print("UHF Density Matrix A Overlap Rank: ", xp.linalg.matrix_rank(P_a @ overlaps) == N_a)
+print("UHF Density Matrix B Overlap Rank: ", xp.linalg.matrix_rank(P_b @ overlaps) == N_b)
+print("UHF Density Matrix A Residual: ", xp.isclose(Fock_a @ P_a @ overlaps, overlaps @ P_a @ Fock_a).all())
+print("UHF Density Matrix B Residual: ", xp.isclose(Fock_b @ P_b @ overlaps, overlaps @ P_b @ Fock_b).all())
+print("Numerical Integral A: ", xp.isclose(N_a, xp.sum(alpha_density)*grid_spacing**3, rtol=1e-2, atol=1e-2))
+print("Numerical Integral B: ", xp.isclose(N_b, xp.sum(beta_density)*grid_spacing**3, rtol=1e-2, atol=1e-2))
+print("Alpha Density Nonnegative: ", (alpha_density >= 0).all())
+print("Beta Density Nonnegative: ", (beta_density >= 0).all())
