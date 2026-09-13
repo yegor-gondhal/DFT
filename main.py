@@ -575,31 +575,31 @@ void eri_kernel(
                 int valid_n = n_len - (x + y + z);
                 if (x != 0) {{
                     for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij0 * R[RIDX(x-1, y, z, n+1)];
+                        R[RIDX(x, y, z, n)] = r_ij0 * R[RIDX((x-1), y, z, (n+1))];
                     }}
                     if (x > 1) {{
                         for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (x-1)*R[RIDX(x-2, y, z, n+1)];
+                            R[RIDX(x, y, z, n)] += (x-1)*R[RIDX((x-2), y, z, (n+1))];
                         }}
                     }}
                 }}
                 else if (y != 0) {{
                     for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij1 * R[RIDX(x, y-1, z, n+1)];
+                        R[RIDX(x, y, z, n)] = r_ij1 * R[RIDX(x, (y-1), z, (n+1))];
                     }}
                     if (y > 1) {{
                         for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (y-1)*R[RIDX(x, y-2, z, n+1)];
+                            R[RIDX(x, y, z, n)] += (y-1)*R[RIDX(x, (y-2), z, (n+1))];
                         }}
                     }}
                 }}
                 else {{
                     for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij2 * R[RIDX(x, y, z-1, n+1)];
+                        R[RIDX(x, y, z, n)] = r_ij2 * R[RIDX(x, y, (z-1), (n+1))];
                     }}
                     if (z > 1) {{
                         for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (z-1)*R[RIDX(x, y, z-2, n+1)];
+                            R[RIDX(x, y, z, n)] += (z-1)*R[RIDX(x, y, (z-2), (n+1))];
                         }}
                     }}
                 }}
@@ -824,13 +824,13 @@ nu = xp.broadcast_to(idx[None, :], (eri_size, eri_size))
 self_coulomb = ERI[mu, nu, mu, nu]
 print("Self Coulomb Nonnegative :", (self_coulomb >= 0).all())
 print("Schwartz Inequality: ", (xp.square(ERI) <= self_coulomb[:, :, None, None]*self_coulomb[None, None, :, :]).all())
-print("s Positive: ", (s > 0).all())
+print("s Positive: ", (xp.diagonal(s) > 0).all())
 print("Symmetric Orthogonalizer 1: ", xp.isclose(X_t@overlaps@X, xp.identity(overlaps.shape[0])).all())
 print("Symmetric Orthogonalizer 1: ", xp.isclose(X, X_t).all())
 print("F_prime: ", xp.isclose(F_prime, F_prime.T).all())
 print("C: ", xp.isclose(C.T@overlaps@C, xp.identity(overlaps.shape[0])).all())
 print("C_prime: ", xp.isclose(C_prime @ C_prime.T, xp.identity(C_prime.shape[0])).all())
-print("Eigenvalue Equation: ", xp.isclose(F @ C, (overlaps @ C) * xp.diag(orb_energy)).all())
+print("Eigenvalue Equation: ", xp.isclose(F @ C, overlaps @ C @ xp.diag(orb_energy)).all())
 print("Electron Count: ", N_e == elec_count)
 print("Spin Population 1: ", N_e == N_a + N_b)
 print("Spin Population 2: ", mult - 1 == N_a - N_b)
