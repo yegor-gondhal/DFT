@@ -7,6 +7,8 @@ import json
 #import awkward as ak
 import time
 import math
+from matplotlib import colormaps
+from matplotlib import colors
 
 xp = cp
 
@@ -44,9 +46,9 @@ def gaussian(pos, center, alpha, powers):
 atoms = ["30", "30", "30"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 '''
-atoms = ["3"]
+atoms = ["6"]
 centers = [[0, 0, 0]]
-unpaired_elec = [1]
+unpaired_elec = [2]
 net_charge = [0]
 
 unpaired_elec = xp.asarray(unpaired_elec)
@@ -813,12 +815,11 @@ P = 0
 J_matrix = 0
 K_a = 0
 K_b = 0
-
 orb_energy_a = 0
 orb_energy_b = 0
 P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
 E_total = -1000
-exit = 0
+count = 0
 while True:
     P = P_a + P_b
     J_matrix = xp.sum(P[None, None, :, :] * ERI, axis=(-1, -2))
@@ -830,32 +831,46 @@ while True:
     E_elec = 0.5*xp.sum(P*H_matrix + P_a*Fock_a + P_b*Fock_b)
     E_total_new = E_elec + E_NN
     delta_E = xp.abs(E_total_new - E_total)
-
-    if exit == 1:
-        break
-
     Fock_a_prime = X_t @ Fock_a @ X
     Fock_b_prime = X_t @ Fock_b @ X
     orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
     orb_energy_b, C_b_prime = xp.linalg.eigh(Fock_b_prime)
+
     C_a_new = X @ C_a_prime
     C_b_new = X @ C_b_prime
     P_a_new, P_b_new = UHF_density(C_a_new, C_b_new, N_a, N_b)
     delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
 
-    if delta_E < 1e-8 and delta_P < 1e-6:
-        exit = 1
+    if (delta_E < 1e-8 and delta_P < 1e-6) or (count > 100):
+        P = P_a + P_b
+        J_matrix = xp.sum(P[None, None, :, :] * ERI, axis=(-1, -2))
+        K_a = xp.sum(P_a[None, :, None, :] * ERI, axis=(1, 3))
+        K_b = xp.sum(P_b[None, :, None, :] * ERI, axis=(1, 3))
+        Fock_a = H_matrix + J_matrix - K_a
+        Fock_b = H_matrix + J_matrix - K_b
+
+        E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
+        E_total_new = E_elec + E_NN
+        delta_E = xp.abs(E_total_new - E_total)
+        Fock_a_prime = X_t @ Fock_a @ X
+        Fock_b_prime = X_t @ Fock_b @ X
+        orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
+        orb_energy_b, C_b_prime = xp.linalg.eigh(Fock_b_prime)
+        C_a = C_a_new
+        C_b = C_b_new
+        break
 
     E_total = E_total_new
     P_a = P_a_new
     P_b = P_b_new
+    count += 1
 
   #print(delta_E, delta_P)
 
 
 print("Initializing Grid...")
-padding = 6
-grid_spacing = 0.2
+padding = 3
+grid_spacing = 0.03
 minx = float(xp.min(centers[:, 0]) - padding)
 maxx = float(xp.max(centers[:, 0]) + padding)
 miny = float(xp.min(centers[:, 1]) - padding)
@@ -887,7 +902,8 @@ eval_grid = (coeffs[:, None]
 )
 print("Reshaping...")
 eval_grid = eval_grid.reshape(-1, 3, grid_len)
-eval_grid = xp.sum(eval_grid, axis=1)
+eval_grid = xp.sum(eval_grid, axis=1)[-1, :]
+eval_grid = xp.broadcast_to(eval_grid[None, :], (1, grid_len))
 
 print("Densities...")
 alpha_density = xp.sum(P_a[:, :, None]*eval_grid[:, None, :]*eval_grid[None, :, :], axis=(0, 1))
@@ -895,7 +911,47 @@ beta_density = xp.sum(P_b[:, :, None]*eval_grid[:, None, :]*eval_grid[None, :, :
 total_density = alpha_density + beta_density
 spin_density = alpha_density - beta_density
 
+xp.save("data/total_density.npy", total_density)
+xp.save("data/spin_density.npy", spin_density)
 
+
+
+#grid /= 10
+density_max = xp.max(total_density)
+tau = 1e-6
+density_min = tau * density_max
+density_mask = (total_density > density_min)
+total_density = total_density[density_mask]
+q = xp.log10(total_density)
+q_min = xp.log10(density_min)
+q_max = xp.log10(density_max)
+density_norm = xp.clip((q - q_min) / (q_max - q_min), 0, 1)
+#density_norm = xp.asnumpy(density_norm)
+
+#density_rgba = colormaps["Blues"](density_norm)
+#density_rgb = density_rgba[:, :3]
+density_rgb = xp.round(density_norm * 255)
+density_rgb = xp.repeat(density_rgb[:, None], 3, axis=1)
+density_rgb = density_rgb.astype(xp.uint8)
+density_data = xp.column_stack((grid[density_mask], density_rgb))
+
+spin_max = xp.max(xp.abs(spin_density))
+spin_tau = 1e-4
+spin_min = spin_tau * spin_max
+spin_mask = (xp.abs(spin_density) > spin_min)
+spin_density = spin_density[spin_mask]
+spin_norm = 0.5*(spin_density/spin_max + 1)
+#spin_norm = xp.asnumpy(spin_norm)
+#spin_cmap = colors.LinearSegmentedColormap.from_list("spin_density",["blue", "white", "red"])
+#spin_rgb = spin_cmap(spin_norm)
+#spin_rgb = spin_rgb[:, :3]
+spin_rgb = xp.round(spin_norm * 255)
+spin_rgb = xp.repeat(spin_rgb[:, None], 3, axis=1)
+spin_rgb = spin_rgb.astype(np.uint8)
+spin_data = np.column_stack((grid[spin_mask], spin_rgb))
+
+np.savetxt("data/density_data.xyz", density_data, fmt=["%.7f", "%.7f", "%.7f", "%d", "%d", "%d"], delimiter=" ")
+np.savetxt("data/spin_data.xyz", spin_data, fmt=["%.7f", "%.7f", "%.7f", "%d", "%d", "%d"], delimiter=" ")
 
 #Complete checks:
 print("\n")
@@ -927,8 +983,8 @@ print("Eigenvalue Equation: ", xp.isclose(F @ C, overlaps @ C @ xp.diag(orb_ener
 print("Electron Count: ", N_e == elec_count)
 print("Spin Population 1: ", N_e == N_a + N_b)
 print("Spin Population 2: ", mult - 1 == N_a - N_b)
-print("N_a: ", N_a > 0)
-print("N_b: ", N_b > 0)
+print("N_a: ", N_a >= 0)
+print("N_b: ", N_b >= 0)
 print("Trace Electron Count A: ", xp.isclose(xp.trace(P_a @ overlaps), N_a))
 print("Trace Electron Count B: ", xp.isclose(xp.trace(P_b @ overlaps), N_b))
 print("Trace Electron Count Total: ", xp.isclose(xp.trace((P_a + P_b) @ overlaps), N_e))
