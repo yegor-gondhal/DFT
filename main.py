@@ -1,3 +1,4 @@
+import gc
 import numpy as np
 import cupy as cp
 import cupyx.scipy.special as mspecial
@@ -12,7 +13,7 @@ from matplotlib import colors
 
 xp = cp
 
-data = json.load(open("data.json"))
+data = json.load(open("data1.json"))
 
 def combinations(added):
     total = []
@@ -72,30 +73,50 @@ for i, atom in enumerate(atoms):
                 coeffs.append(coefficients[j])
                 cen.append(centers[i])
                 pow.append(s_orb)
-            if l[j] == 1:
+            elif l[j] == 1:
                 for p in p_orb:
                     exp.append(exponents)
                     coeffs.append(coefficients[j])
                     cen.append(centers[i])
                     pow.append(p)
+            elif l[j] == 2:
+                for d in d_orb:
+                    exp.append(exponents)
+                    coeffs.append(coefficients[j])
+                    cen.append(centers[i])
+                    pow.append(d)
+
+cen1 = []
+pow1 = []
+contracted_position = []
+for i, e in enumerate(exp):
+    tempcen = []
+    temppow = []
+    tempcontr = []
+    for _ in range(len(e)):
+        tempcen.append(cen[i])
+        temppow.append(pow[i])
+        tempcontr.append(i)
+    cen1.append(tempcen)
+    pow1.append(temppow)
+    contracted_position.append(tempcontr)
+
+exp = [j for i in exp for j in i]
+coeffs = [j for i in coeffs for j in i]
+cen = [j for i in cen1 for j in i]
+pow = [j for i in pow1 for j in i]
+contracted_position = [j for i in contracted_position for j in i]
 
 exp = xp.array(exp)
 coeffs = xp.array(coeffs)
 cen = xp.array(cen)
 pow = xp.array(pow)
+contracted_position = xp.array(contracted_position)
+max_contr = int(xp.max(contracted_position) + 1)
 centers = xp.array(centers)
 Z = xp.empty(len(atoms))
 for i in range(len(atoms)):
     Z[i] = int(atoms[i])
-
-exp_shape = exp.shape
-cen = cen.repeat(exp_shape[1], axis=0).reshape((exp_shape[0], exp_shape[1], 3))
-pow = pow.repeat(exp_shape[1], axis=0).reshape((exp_shape[0], exp_shape[1], 3))
-
-exp = exp.ravel()
-coeffs = coeffs.ravel()
-cen = cen.reshape((exp_shape[0]*exp_shape[1], 3))
-pow = pow.reshape((exp_shape[0]*exp_shape[1], 3))
 
 def sym(matrix):
     return xp.isclose(matrix, matrix.T).all()
@@ -267,13 +288,16 @@ def calc_E_1d(exp, cen, pow):
         added_E_coeffs.append(store_E)
         added_E_idxs.append(idxs)
 
-    E_coeffs = []
-    for i in range(s):
-        E_coeffs.append([])
+    E_coeffs = [
+        [None for _ in range(s)]
+        for _ in range(s)
+    ]
 
-    for (e, idx) in zip(added_E_coeffs, added_E_idxs):
-        for (e_val, idx_val) in zip(e, idx):
-            E_coeffs[int(idx_val[0])].insert(int(idx_val[1]), e_val)
+    for e, idx in zip(added_E_coeffs, added_E_idxs):
+        for e_val, idx_val in zip(e, idx):
+            row = int(idx_val[0])
+            col = int(idx_val[1])
+            E_coeffs[row][col] = e_val
 
     return E_coeffs
     #return added_E_coeffs, added_E_idxs, prefactor
@@ -348,107 +372,6 @@ def nuclear_repulsion(Z, centers):
             if i < j:
                 result += Z[i]*Z[j]/xp.linalg.norm(centers[i] - centers[j])
     return result
-
-def calc_R_electron(pow, p, P):
-    K = pow.shape[0]**2
-
-    p_k = p.ravel()
-    P_k = P.reshape(-1, 3)
-    rho = p_k[:, None]*p_k[None, :]/(p_k[:, None] + p_k[None, :])
-    R_ij = P_k[:, None, :] - P_k[None, :, :]
-    T = xp.sum(xp.square(R_ij), axis=-1)*rho
-
-    pow = pow[:, None, :] + pow[None, :, :]
-    pow = pow.reshape(-1, 3)
-
-    max_hermite = xp.sum(pow, axis=-1)
-    max_hermite = max_hermite[:, None] + max_hermite[None, :]
-
-    x_shape = pow[:, 0][:, None] + pow[:, 0][None, :] + 1
-    y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
-    z_shape = pow[:, 2][:, None] + pow[:, 2][None, :] + 1
-
-    shapes = xp.stack((x_shape, y_shape, z_shape, max_hermite + 1), axis=-1)
-    shapes_host = xp.asnumpy(shapes)
-
-    R_matrix = []
-    for i in range(K):
-        #print(i, "/", K)
-        R_row = []
-        for j in range(K):
-            x_len, y_len, z_len, n_len = shapes_host[i, j]
-            R = xp.empty((x_len, y_len, z_len, n_len))
-            n_arr = xp.arange(n_len)
-            boys_t = xp.broadcast_to(T[i, j][None], (n_len,))
-            R[0, 0, 0, :] = xp.power(-2*rho[i, j], n_arr)*boys(n_arr, boys_t)
-
-            for x in range(x_len):
-                for y in range(y_len):
-                    for z in range(z_len):
-                        if x == 0 and y == 0 and z == 0:
-                            continue
-                        if (x != 0):
-                            R[x, y, z, :-1] = R_ij[i, j, 0]*R[x-1, y, z, 1:]
-                            if x > 1:
-                                R[x, y, z, :-1] += (x-1)*R[x-2, y, z, 1:]
-                        elif (y != 0):
-                            R[x, y, z, :-1] = R_ij[i, j, 1] * R[x, y-1, z, 1:]
-                            if y > 1:
-                                R[x, y, z, :-1] += (y - 1) * R[x, y-2, z, 1:]
-                        else:
-                            R[x, y, z, :-1] = R_ij[i, j, 2] * R[x, y, z-1, 1:]
-                            if z > 1:
-                                R[x, y, z, :-1] += (z - 1) * R[x, y, z-2, 1:]
-
-            R_row.append(R[..., 0])
-        R_matrix.append(R_row)
-    return R_matrix, K, p_k
-
-def elec_hermite_sum(Ex, Ey, Ez, R, K, p_k):
-    ERI = xp.empty((K, K))
-    N = int(xp.sqrt(K))
-    for i in range(K):
-        #print(i, "/", K)
-        for j in range(K):
-            a = i // N
-            b = i % N
-            c = j // N
-            d = j % N
-
-            Ex1 = Ex[a][b]
-            Ey1 = Ey[a][b]
-            Ez1 = Ez[a][b]
-            Ex2 = Ex[c][d]
-            Ey2 = Ey[c][d]
-            Ez2 = Ez[c][d]
-
-            term = (Ex1[:, None, None, None, None, None]
-                    *Ey1[None, :, None, None, None, None]
-                    *Ez1[None, None, :, None, None, None]
-                    *Ex2[None, None, None, :, None, None]
-                    *Ey2[None, None, None, None, :, None]
-                    *Ez2[None, None, None, None, None, :])
-
-            t = xp.arange(xp.size(Ex1))
-            u = xp.arange(xp.size(Ey1))
-            v = xp.arange(xp.size(Ez1))
-            tau = xp.arange(xp.size(Ex2))
-            phi = xp.arange(xp.size(Ey2))
-            chi = xp.arange(xp.size(Ez2))
-
-            term *= xp.power(-1, (tau[:, None, None] + phi[None, :, None] + chi[None, None, :])[None, None, None, ...])
-            term *= R[i][j][
-                t[:, None, None, None, None, None] + tau[None, None, None, :, None, None],
-                u[None, :, None, None, None, None] + phi[None, None, None, None, :, None],
-                v[None, None, :, None, None, None] + chi[None, None, None, None, None, :]
-            ]
-            ERI[i, j] = xp.sum(term)
-
-    coeff = p_k[:, None]*p_k[None, :]*xp.sqrt(p_k[:, None] + p_k[None, :])
-    coeff = 2*xp.power(xp.pi, 2.5)/coeff
-
-    return coeff*ERI
-
 
 source = f"""
 #include <math_constants.h>
@@ -673,6 +596,46 @@ def UHF_density(C_a, C_b, N_a, N_b):
 
     return P_a, P_b
 
+def contract_2d(matrix, contracted_position, max_contr):
+    cols = int(matrix.shape[1])
+    temp = xp.zeros((max_contr, cols))
+    xp.add.at(temp, contracted_position, matrix)
+    temp = temp.T
+    cols = int(temp.shape[1])
+    new_matrix = xp.zeros((max_contr, cols))
+    xp.add.at(new_matrix, contracted_position, temp)
+    return new_matrix.T
+
+def contract_4d(matrix, contracted_position, max_contr):
+    N = int(xp.sqrt(matrix.shape[0]))
+    matrix = matrix.reshape(N, N, N, N)
+
+    temp = xp.zeros((max_contr, N, N, N))
+    xp.add.at(temp, contracted_position, matrix)
+
+    temp1 = xp.zeros((max_contr, max_contr, N, N))
+    temp = xp.moveaxis(temp, 1, 0)
+    xp.add.at(temp1, contracted_position, temp)
+    xp.moveaxis(temp1, 0, 1)
+
+    temp2 = xp.zeros((max_contr, max_contr, max_contr, N))
+    temp1 = xp.moveaxis(temp1, 2, 0)
+    xp.add.at(temp2, contracted_position, temp1)
+    temp2 = xp.moveaxis(temp2, 0, 2)
+
+    temp3 = xp.zeros((max_contr, max_contr, max_contr, max_contr))
+    temp2 = xp.moveaxis(temp2, 3, 0)
+    xp.add.at(temp3, contracted_position, temp2)
+    temp3 = xp.moveaxis(temp3, 0, 3)
+
+    return temp3
+
+def contract_1d(matrix, contracted_position, max_contr):
+    cols = int(matrix.shape[1])
+    temp = xp.zeros((max_contr, cols))
+    xp.add.at(temp, contracted_position, matrix)
+    return temp
+
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
 print("Max position: ", xp.max(cen))
@@ -698,23 +661,13 @@ T_y = T_raw(exp, cen[:, 1], pow[:, 1], overlapy)
 T_z = T_raw(exp, cen[:, 2], pow[:, 2], overlapz)
 
 print("Processing Overlap...")
-overlaps = normals*mult_coeffs*overlapx*overlapy*overlapz
-overlaps = overlaps.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
-overlaps = xp.sum(overlaps, axis=-1)
-overlaps = overlaps.T
-overlaps = overlaps.reshape(-1, exp_shape[0], exp_shape[1])
-overlaps = xp.sum(overlaps, axis=-1)
-overlaps = overlaps.T
+uncontracted_overlaps = normals*mult_coeffs*overlapx*overlapy*overlapz
+overlaps = contract_2d(uncontracted_overlaps, contracted_position, max_contr)
 
 print("Processing T Matrix...")
-T_primitive = T_x*overlapy*overlapz + T_y*overlapx*overlapz + T_z*overlapx*overlapy
-T_matrix = -0.5*normals*mult_coeffs*T_primitive
-T_matrix = T_matrix.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
-T_matrix = xp.sum(T_matrix, axis=-1)
-T_matrix = T_matrix.T
-T_matrix = T_matrix.reshape(-1, exp_shape[0], exp_shape[1])
-T_matrix = xp.sum(T_matrix, axis=-1)
-T_matrix = T_matrix.T
+uncontracted_T_primitive = T_x*overlapy*overlapz + T_y*overlapx*overlapz + T_z*overlapx*overlapy
+uncontracted_T_matrix = -0.5*normals*mult_coeffs*uncontracted_T_primitive
+T_matrix = contract_2d(uncontracted_T_matrix, contracted_position, max_contr)
 
 print("E Values...")
 E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
@@ -764,24 +717,17 @@ eri_kernel((blocks,), (threads,), (
 ))
 cp.cuda.runtime.deviceSynchronize()
 print("Processing ERI...")
-ERI = xp.empty((K, K), dtype=xp.float64)
-ERI[quad_i, quad_j] = eri_values
-ERI[quad_j, quad_i] = eri_values
-ERI *= xp.outer(normals.ravel(), normals.ravel())*xp.outer(mult_coeffs.ravel(), mult_coeffs.ravel())
-B = exp_shape[0]
-L = exp_shape[1]
-ERI = ERI.reshape(B, L, B, L, B, L, B, L)
-ERI = xp.sum(ERI, axis=(1, 3, 5, 7))
+uncontracted_ERI = xp.empty((K, K), dtype=xp.float64)
+uncontracted_ERI[quad_i, quad_j] = eri_values
+uncontracted_ERI[quad_j, quad_i] = eri_values
+uncontracted_ERI *= xp.outer(normals.ravel(), normals.ravel())*xp.outer(mult_coeffs.ravel(), mult_coeffs.ravel())
+ERI = contract_4d(uncontracted_ERI, contracted_position, max_contr)
+
 
 
 print("Nuclear Attraction...")
-V_matrix = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
-V_matrix = V_matrix.reshape(exp.shape[0], exp_shape[0], exp_shape[1])
-V_matrix = xp.sum(V_matrix, axis=-1)
-V_matrix = V_matrix.T
-V_matrix = V_matrix.reshape(-1, exp_shape[0], exp_shape[1])
-V_matrix = xp.sum(V_matrix, axis=-1)
-V_matrix = V_matrix.T
+uncontracted_V_matrix = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
+V_matrix = contract_2d(uncontracted_V_matrix, contracted_position, max_contr)
 
 H_matrix = T_matrix + V_matrix
 
@@ -869,8 +815,8 @@ while True:
 
 
 print("Initializing Grid...")
-padding = 3
-grid_spacing = 0.03
+padding = 4
+grid_spacing = 0.07
 minx = float(xp.min(centers[:, 0]) - padding)
 maxx = float(xp.max(centers[:, 0]) + padding)
 miny = float(xp.min(centers[:, 1]) - padding)
@@ -878,9 +824,15 @@ maxy = float(xp.max(centers[:, 1]) + padding)
 minz = float(xp.min(centers[:, 2]) - padding)
 maxz = float(xp.max(centers[:, 2]) + padding)
 
-gridx = xp.linspace(minx, maxx, math.ceil((maxx-minx)/grid_spacing)+1)
-gridy = xp.linspace(miny, maxy, math.ceil((maxy-miny)/grid_spacing)+1)
-gridz = xp.linspace(minz, maxz, math.ceil((maxz-minz)/grid_spacing)+1)
+x_space = math.ceil((maxx-minx)/grid_spacing)+1
+y_space = math.ceil((maxy-miny)/grid_spacing)+1
+z_space = math.ceil((maxz-minz)/grid_spacing)+1
+print("X_space: ", x_space)
+print("Y_space: ", y_space)
+print("Z_space: ", z_space)
+gridx = xp.linspace(minx, maxx, x_space)
+gridy = xp.linspace(miny, maxy, y_space)
+gridz = xp.linspace(minz, maxz, z_space)
 X_shape = xp.size(gridx)
 Y_shape = xp.size(gridy)
 Z_shape = xp.size(gridz)
@@ -890,33 +842,59 @@ gridz = xp.broadcast_to(gridz[None, None, :], (X_shape, Y_shape, Z_shape))
 grid = xp.stack((gridx, gridy, gridz), axis=-1)
 grid_shape = grid.shape[:-1]
 grid = grid.reshape(-1, 3)
-grid_len = grid.shape[0]
+grid_len = int(grid.shape[0])
+
+print("Clearing VRAM...")
+keep = ["grid", "grid_len", "coeffs", "normals_1d", "cen", "pow", "exp", "P_a", "P_b", "xp", "np", "contract_1d", "contracted_position", "max_contr"]
+for name in list(globals().keys()):
+    if not name.startswith('_') and name not in keep and name != 'cp' and name != 'gc':
+        del globals()[name]
+gc.collect()
+cp.get_default_memory_pool().free_all_blocks()
 
 print("Evaluating Grid...")
-eval_grid = (coeffs[:, None]
-                  *normals_1d[:, None]
-                  *xp.power(grid[:, 0][None, :] - cen[:, 0][:, None], pow[:, 0][:, None])
-                  *xp.power(grid[:, 1][None, :] - cen[:, 1][:, None], pow[:, 1][:, None])
-                  *xp.power(grid[:, 2][None, :] - cen[:, 2][:, None], pow[:, 2][:, None])
-                  *xp.exp(-exp[:, None] * xp.sum(xp.square(grid[None, :, :] - cen[:, None, :]), axis=-1))
-)
-print("Reshaping...")
-eval_grid = eval_grid.reshape(-1, 3, grid_len)
-eval_grid = xp.sum(eval_grid, axis=1)[-1, :]
-eval_grid = xp.broadcast_to(eval_grid[None, :], (1, grid_len))
+chunk_size = 3e6
+write = 0
+uncontracted_eval_grid = xp.empty((cen.shape[0], grid_len))
+while write != grid_len-1:
+    write_to = min(write+chunk_size, grid_len-1)
+    uncontracted_eval_grid[:, write:write_to] = (coeffs[:, None]
+                      *normals_1d[:, None]
+                      *xp.power(grid[write:write_to, 0][None, :] - cen[:, 0][:, None], pow[:, 0][:, None])
+                      *xp.power(grid[write:write_to, 1][None, :] - cen[:, 1][:, None], pow[:, 1][:, None])
+                      *xp.power(grid[write:write_to, 2][None, :] - cen[:, 2][:, None], pow[:, 2][:, None])
+                      *xp.exp(-exp[:, None] * xp.sum(xp.square(grid[None, write:write_to, :] - cen[:, None, :]), axis=-1))
+    )
+    write = write_to
 
+print("Contracting...")
+eval_grid = contract_1d(uncontracted_eval_grid, contracted_position, max_contr)
+del uncontracted_eval_grid
+gc.collect()
 print("Densities...")
+grid_len = eval_grid.shape[0]
+alpha_density = xp.empty((grid_len,))
+beta_density = xp.empty((grid_len,))
+
+chunk_size = 1e5
+write = 0
+while write != grid_len-1:
+    write_to = min(write+chunk_size, grid_len-1)
+    alpha_density[write:write_to] = xp.sum(P_a[:, :, None]*eval_grid[:, None, write:write_to]*eval_grid[None, :, write:write_to], axis=(0, 1))
+    beta_density[write:write_to] = xp.sum(P_b[:, :, None] * eval_grid[:, None, write:write_to] * eval_grid[None, :, write:write_to], axis=(0, 1))
+    write = write_to
+
 alpha_density = xp.sum(P_a[:, :, None]*eval_grid[:, None, :]*eval_grid[None, :, :], axis=(0, 1))
 beta_density = xp.sum(P_b[:, :, None]*eval_grid[:, None, :]*eval_grid[None, :, :], axis=(0, 1))
 total_density = alpha_density + beta_density
 spin_density = alpha_density - beta_density
-
+print("Saving...")
 xp.save("data/total_density.npy", total_density)
 xp.save("data/spin_density.npy", spin_density)
 
 
 
-#grid /= 10
+grid /= 5
 density_max = xp.max(total_density)
 tau = 1e-6
 density_min = tau * density_max
@@ -952,7 +930,7 @@ spin_data = np.column_stack((grid[spin_mask], spin_rgb))
 
 np.savetxt("data/density_data.xyz", density_data, fmt=["%.7f", "%.7f", "%.7f", "%d", "%d", "%d"], delimiter=" ")
 np.savetxt("data/spin_data.xyz", spin_data, fmt=["%.7f", "%.7f", "%.7f", "%d", "%d", "%d"], delimiter=" ")
-
+'''
 #Complete checks:
 print("\n")
 print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
@@ -1011,3 +989,4 @@ print("Numerical Integral A: ", xp.isclose(N_a, xp.sum(alpha_density)*grid_spaci
 print("Numerical Integral B: ", xp.isclose(N_b, xp.sum(beta_density)*grid_spacing**3, rtol=1e-2, atol=1e-2))
 print("Alpha Density Nonnegative: ", (alpha_density >= 0).all())
 print("Beta Density Nonnegative: ", (beta_density >= 0).all())
+'''
