@@ -8,8 +8,6 @@ import json
 #import awkward as ak
 import time
 import math
-from matplotlib import colormaps
-from matplotlib import colors
 
 xp = cp
 
@@ -30,19 +28,6 @@ p_orb = combinations(1)
 d_orb = combinations(2)
 f_orb = combinations(3)
 
-def gaussian(pos, center, alpha, powers):
-    dx = pos[0] - center[0]
-    dy = pos[1] - center[1]
-    dz = pos[2] - center[2]
-
-    r2 = dx*dx + dy*dy + dz*dz
-
-    return (
-        dx**powers[0] *
-        dy**powers[1] *
-        dz**powers[2] *
-        xp.exp(-alpha*r2)
-    )
 '''
 atoms = ["30", "30", "30"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
@@ -50,10 +35,9 @@ centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 atoms = ["6"]
 centers = [[0, 0, 0]]
 unpaired_elec = [2]
-net_charge = [0]
+molecular_charge = 0
 
 unpaired_elec = xp.asarray(unpaired_elec)
-net_charge = xp.asarray(net_charge)
 
 exp = []
 coeffs = []
@@ -66,25 +50,41 @@ for i, atom in enumerate(atoms):
         l = instance[0]
         exponents = instance[1]
         coefficients = instance[2]
+        momenta = 0
 
-        for j in range(len(l)):
-            if l[j] == 0:
+        if len(l) == 1:
+            momenta = [l[0]] * len(coefficients)
+        elif len(l) == len(coefficients):
+            momenta = l
+        else:
+            raise ValueError("Something went wrong")
+
+
+        for l, coefficient in zip(momenta, coefficients):
+            if l == 0:
                 exp.append(exponents)
-                coeffs.append(coefficients[j])
+                coeffs.append(coefficient)
                 cen.append(centers[i])
                 pow.append(s_orb)
-            elif l[j] == 1:
+            elif l == 1:
                 for p in p_orb:
                     exp.append(exponents)
-                    coeffs.append(coefficients[j])
+                    coeffs.append(coefficient)
                     cen.append(centers[i])
                     pow.append(p)
-            elif l[j] == 2:
+            elif l == 2:
                 for d in d_orb:
                     exp.append(exponents)
-                    coeffs.append(coefficients[j])
+                    coeffs.append(coefficient)
                     cen.append(centers[i])
                     pow.append(d)
+            elif l == 3:
+                for f in f_orb:
+                    exp.append(exponents)
+                    coeffs.append(coefficient)
+                    cen.append(centers[i])
+                    pow.append(f)
+
 
 cen1 = []
 pow1 = []
@@ -110,11 +110,19 @@ contracted_position = [j for i in contracted_position for j in i]
 exp = xp.array(exp)
 coeffs = xp.array(coeffs)
 cen = xp.array(cen)
-pow = xp.array(pow)
+pow = xp.array(pow, dtype=xp.int32)
 contracted_position = xp.array(contracted_position)
+
+mask = (coeffs != 0.0)
+exp = exp[mask]
+coeffs = coeffs[mask]
+cen = cen[mask]
+pow = pow[mask]
+contracted_position = contracted_position[mask]
+
 max_contr = int(xp.max(contracted_position) + 1)
 centers = xp.array(centers)
-Z = xp.empty(len(atoms))
+Z = xp.empty(len(atoms), xp.int32)
 for i in range(len(atoms)):
     Z[i] = int(atoms[i])
 
@@ -179,7 +187,6 @@ def T_raw(exp, cen, pow, prev_overlap):
     result = -2*exp[None, :]*(2*pow[None, :] + 1)*prev_overlap
     result += 4*xp.square(exp[None, :])*overlap(exp, exp, cen, cen, pow, pow+2)
     if xp.any(pow >= 2):
-        print("Entered")
         idxs = xp.where(pow >= 2)[0]
         result[:, idxs] += pow[idxs][None, :]*(pow[idxs][None, :] - 1)*overlap(exp, exp[idxs], cen, cen[idxs], pow, pow[idxs]-2)
     return result
@@ -375,7 +382,11 @@ def nuclear_repulsion(Z, centers):
 
 source = f"""
 #include <math_constants.h>
-#define max_size 1024
+#define max_conv 13
+#define max_r 2048
+#define max_e 7
+#define max_boys 13
+#define RIDX(x, y, z, n) (((x*y_len+y)*z_len+z)*n_len+n)
 
 __device__ double taylor(int m, double T) {{
     double result = 1.0 / (2.0 * m + 1.0);
@@ -431,11 +442,231 @@ __device__ void convolution(const double* E, int E_i, int E_j, int len_i, int le
     }}
 }}
 
+__device__ void calc_E(double alpha, double beta, double A, double B, int la, int lb, double* E) {{
+    double prev[max_e];
+    double next[max_e];
+    
+    for (int t = 0; t < max_e; ++t) {{
+        prev[t] = 0.0;
+        next[t] = 0.0;
+        E[t] = 0.0;
+    }}
+    
+    double p = alpha + beta;
+    double q = alpha*beta/p;
+    double Q = A - B;
+    
+    prev[0] = exp(-q*Q*Q);
+    int order = 0;
+    for (int step = 0; step < la; ++step) {{
+        int new_order = order + 1;
+        for (int t = 0; t < new_order; ++t) {{
+            double value = 0.0;
+            
+            if (t <= order) {{
+                value -= (beta*Q/p)*prev[t];
+            }}
+            
+            if (t > 0) {{
+                value += prev[t-1]/(2.0*p);
+            }}
+            
+            if (t + 1 <= order) {{
+                value += (t+1)*prev[t+1];
+            }}
+            next[t] = value;
+        }}
+        order = new_order;
+        for (int t = 0; t <= order; ++t) {{
+            prev[t] = next[t];
+        }}
+    }}
+    
+    for (int step = 0; step < lb; ++step) {{
+        int new_order = order + 1;
+        for (int t = 0; t < new_order; ++t) {{
+            double value = 0.0;
+            
+            if (t <= order) {{
+                value += (alpha*Q/p)*prev[t];
+            }}
+            
+            if (t > 0) {{
+                value += prev[t-1]/(2.0*p);
+            }}
+            
+            if (t + 1 <= order) {{
+                value += (t+1)*prev[t+1];
+            }}
+            next[t] = value;
+        }}
+        order = new_order;
+        for (int t = 0; t <= order; ++t) {{
+            prev[t] = next[t];
+        }}
+    }}
+    for (int t = 0; t <= order; ++t) {{
+        E[t] = prev[t];
+    }}
+}}
+
+__device__ void calc_R(int x_len, int y_len, int z_len, int n_len, double dx, double dy, double dz, double param, double* R) {{
+    
+    double T = param*(dx*dx + dy*dy + dz*dz);
+    double F[max_boys];
+    boys(n_len, T, F);
+    double scale = 1.0;
+    
+    for (int n = 0; n < n_len; ++n) {{
+        R[RIDX(0, 0, 0, n)] = scale*F[n];
+        scale *= -2.0*param;
+    }}
+
+    for (int x = 0; x < x_len; ++x) {{
+        for (int y = 0; y < y_len; ++y) {{
+            for (int z = 0; z < z_len; ++z) {{
+                if (x == 0 && y == 0 && z == 0) {{
+                    continue;
+                }}
+                int valid_n = n_len - (x + y + z);
+                if (x != 0) {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = dx * R[RIDX((x-1), y, z, (n+1))];
+                    }}
+                    if (x > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (x-1)*R[RIDX((x-2), y, z, (n+1))];
+                        }}
+                    }}
+                }}
+                else if (y != 0) {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = dy * R[RIDX(x, (y-1), z, (n+1))];
+                    }}
+                    if (y > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (y-1)*R[RIDX(x, (y-2), z, (n+1))];
+                        }}
+                    }}
+                }}
+                else {{
+                    for (int n = 0; n < valid_n; ++n) {{
+                        R[RIDX(x, y, z, n)] = dz * R[RIDX(x, y, (z-1), (n+1))];
+                    }}
+                    if (z > 1) {{
+                        for (int n = 0; n < valid_n; ++n) {{
+                            R[RIDX(x, y, z, n)] += (z-1)*R[RIDX(x, y, (z-2), (n+1))];
+                        }}
+                    }}
+                }}
+            }}
+        }}
+    }}
+}}
+
+extern "C" __global__ void nuclear_kernel(
+    const double* exp, 
+    const double* cen, 
+    const int* pow, 
+    const int* atoms, 
+    const double* atom_centers,
+    const int num_atoms, 
+    const int num_funcs, 
+    double* V_output,
+    double* Ex_output,
+    double* Ey_output,
+    double* Ez_output,
+    double* p_output,
+    double* P_output,
+    int* nx_output,
+    int* ny_output,
+    int* nz_output
+    ) {{
+    
+    long long q = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    
+    long long num_pairs = (long long)num_funcs * (long long)num_funcs;
+    
+    if (q >= num_pairs) {{
+        return;
+    }}
+    
+    int a = q / num_funcs;
+    int b = q % num_funcs;
+    
+    double Ex[max_e];
+    double Ey[max_e];
+    double Ez[max_e];
+    
+    double e1 = exp[a];
+    double e2 = exp[b];
+    double c1x = cen[3*a];
+    double c2x = cen[3*b];
+    double c1y = cen[3*a+1];
+    double c2y = cen[3*b+1];
+    double c1z = cen[3*a+2];
+    double c2z = cen[3*b+2];
+    int p1x = pow[3*a];
+    int p2x = pow[3*b];
+    int p1y = pow[3*a+1];
+    int p2y = pow[3*b+1];
+    int p1z = pow[3*a+2];
+    int p2z = pow[3*b+2];
+    
+    calc_E(e1, e2, c1x, c2x, p1x, p2x, Ex);
+    calc_E(e1, e2, c1y, c2y, p1y, p2y, Ey);
+    calc_E(e1, e2, c1z, c2z, p1z, p2z, Ez);
+    
+    double p = e1 + e2;
+    double Px = (e1*c1x + e2*c2x)/p;
+    double Py = (e1*c1y + e2*c2y)/p;
+    double Pz = (e1*c1z + e2*c2z)/p;
+
+    int x_len = p1x + p2x + 1;
+    int y_len = p1y + p2y + 1;
+    int z_len = p1z + p2z + 1;
+    int n_len = x_len + y_len + z_len - 2;
+    
+    double R[max_r];
+    double value = 0.0;
+    
+    for (int atom = 0; atom < num_atoms; ++atom) {{
+        double dx = Px - atom_centers[3*atom];
+        double dy = Py - atom_centers[3*atom+1];
+        double dz = Pz - atom_centers[3*atom+2];
+        calc_R(x_len, y_len, z_len, n_len, dx, dy, dz, p, R);
+        double contraction = 0.0;
+        for (int x = 0; x < x_len; ++x) {{
+            for (int y = 0; y < y_len; ++y) {{
+                double exy = Ex[x] * Ey[y];
+                for (int z = 0; z < z_len; ++z) {{
+                    contraction += exy*Ez[z]*R[RIDX(x, y, z, 0)];
+                }}
+            }}
+        }}
+        value += atoms[atom]*contraction;
+    }}
+    value *= -2.0 * CUDART_PI / p;
+    V_output[q] = value;
+    for (int i = 0; i < max_e; ++i) {{
+        Ex_output[q*max_e+i] = Ex[i];
+        Ey_output[q*max_e+i] = Ey[i];
+        Ez_output[q*max_e+i] = Ez[i];
+    }}
+    p_output[q] = p;
+    P_output[3*q] = Px;
+    P_output[3*q+1] = Py;
+    P_output[3*q+2] = Pz;
+    nx_output[q] = x_len;
+    ny_output[q] = y_len;
+    nz_output[q] = z_len;
+}}
+
 extern "C" __global__
 void eri_kernel(
-    const int* quad_i,
-    const int* quad_j,
-    const int num_quads,
+    const int row_start,
+    const int K,
+    const long long num_current,
     const double* p_k,
     const double* P_k,
     const double* Ex,
@@ -449,18 +680,16 @@ void eri_kernel(
     const int sz,
     double* eri_output
 ) {{
-    #define max_conv 13
-    #define max_r 2048
-    #define max_boys 13
 
-    int q = blockIdx.x * blockDim.x + threadIdx.x;
+    long long q =
+    (long long)blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (q >= num_quads) {{
-        return;    
+    if (q >= num_current) {{
+        return;
     }}
 
-    int i = quad_i[q];
-    int j = quad_j[q];
+    int i = row_start + (int)(q / K);
+    int j = (int)(q % K);
 
     double p_i = p_k[i];
     double p_j = p_k[j];
@@ -476,65 +705,14 @@ void eri_kernel(
     int y_len = nyi + nyj - 1;
     int z_len = nzi + nzj - 1;
     int n_len = x_len + y_len + z_len - 2;
-    
-
-    #define RIDX(x, y, z, n) (((x*y_len+y)*z_len+z)*n_len+n)
 
     double rho = (p_i*p_j)/(p_i+p_j);
     double r_ij0 = P_k[3*i] - P_k[3*j];
     double r_ij1 = P_k[3*i+1] - P_k[3*j+1];
     double r_ij2 = P_k[3*i+2] - P_k[3*j+2];
-    double T = rho*(r_ij0*r_ij0 + r_ij1*r_ij1 + r_ij2*r_ij2);
-
     double R[max_r];
-    double F[max_boys];
-    boys(n_len, T, F);
-    double scale = 1.0;
-    for (int n = 0; n < n_len; ++n) {{
-        R[RIDX(0, 0, 0, n)] = scale*F[n];
-        scale *= -2.0*rho;
-    }}
-
-    for (int x = 0; x < x_len; ++x) {{
-        for (int y = 0; y < y_len; ++y) {{
-            for (int z = 0; z < z_len; ++z) {{
-                if (x == 0 && y == 0 && z == 0) {{
-                    continue;
-                }}
-                int valid_n = n_len - (x + y + z);
-                if (x != 0) {{
-                    for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij0 * R[RIDX((x-1), y, z, (n+1))];
-                    }}
-                    if (x > 1) {{
-                        for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (x-1)*R[RIDX((x-2), y, z, (n+1))];
-                        }}
-                    }}
-                }}
-                else if (y != 0) {{
-                    for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij1 * R[RIDX(x, (y-1), z, (n+1))];
-                    }}
-                    if (y > 1) {{
-                        for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (y-1)*R[RIDX(x, (y-2), z, (n+1))];
-                        }}
-                    }}
-                }}
-                else {{
-                    for (int n = 0; n < valid_n; ++n) {{
-                        R[RIDX(x, y, z, n)] = r_ij2 * R[RIDX(x, y, (z-1), (n+1))];
-                    }}
-                    if (z > 1) {{
-                        for (int n = 0; n < valid_n; ++n) {{
-                            R[RIDX(x, y, z, n)] += (z-1)*R[RIDX(x, y, (z-2), (n+1))];
-                        }}
-                    }}
-                }}
-            }}
-        }}
-    }}
+    
+    calc_R(x_len, y_len, z_len, n_len, r_ij0, r_ij1, r_ij2, rho, R);
 
     double Cx[max_conv];
     double Cy[max_conv];
@@ -581,8 +759,7 @@ def total_spin(unpaired_elec):
         reshaped_pair = pairs[i].reshape(shape)
         total_sum = total_sum + reshaped_pair
 
-    total_sum = xp.where(total_sum < 0, 1000, total_sum)
-    return xp.min(total_sum)/2
+    return xp.min(xp.abs(total_sum))/2
 
 def UHF_density(C_a, C_b, N_a, N_b):
     arr_a = xp.arange(0, N_a)
@@ -632,7 +809,7 @@ def contract_4d(matrix, contracted_position, max_contr):
 
 def contract_1d(matrix, contracted_position, max_contr):
     cols = int(matrix.shape[1])
-    temp = xp.zeros((max_contr, cols))
+    temp = xp.zeros((max_contr, cols), dtype=xp.float32)
     xp.add.at(temp, contracted_position, matrix)
     return temp
 
@@ -669,70 +846,94 @@ uncontracted_T_primitive = T_x*overlapy*overlapz + T_y*overlapx*overlapz + T_z*o
 uncontracted_T_matrix = -0.5*normals*mult_coeffs*uncontracted_T_primitive
 T_matrix = contract_2d(uncontracted_T_matrix, contracted_position, max_contr)
 
-print("E Values...")
-E_x_coeffs = calc_E_1d(exp, cen[:, 0], pow[:, 0])
-E_y_coeffs = calc_E_1d(exp, cen[:, 1], pow[:, 1])
-E_z_coeffs = calc_E_1d(exp, cen[:, 2], pow[:, 2])
-
-R_matrix, p, P = calc_R(exp, cen, pow, centers)
-
-print("Packing E...")
-Ex, nx, sx = pack_E(E_x_coeffs)
-Ey, ny, sy = pack_E(E_y_coeffs)
-Ez, nz, sz = pack_E(E_z_coeffs)
-
 print("Setting Up Kernel...")
 N = int(xp.size(exp))
 K = N**2
-quad_i, quad_j = xp.tril_indices(K)
-quad_i = quad_i.astype(xp.int32)
-quad_j = quad_j.astype(xp.int32)
-num_quads = quad_i.size
-p_k = xp.ascontiguousarray(p.reshape(-1), dtype=xp.float64)
-P_k = xp.ascontiguousarray(P.reshape(-1, 3), dtype=xp.float64)
-eri_values = xp.empty((num_quads), dtype=xp.float64)
-eri_kernel = cp.RawKernel(source, "eri_kernel")
-eri_kernel.compile()
-cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize,32768 )
+module = cp.RawModule(
+    code=source,
+    name_expressions=(
+        "nuclear_kernel",
+        "eri_kernel",
+    ),
+)
+nuclear_kernel = module.get_function("nuclear_kernel")
+eri_kernel = module.get_function("eri_kernel")
+cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize,32768)
 
+max_e = 7
+Ex = xp.empty((K*max_e))
+Ey = xp.empty((K*max_e))
+Ez = xp.empty((K*max_e))
+nx = xp.empty(K, xp.int32)
+ny = xp.empty(K, xp.int32)
+nz = xp.empty(K, xp.int32)
+p_k = xp.empty(K)
+P_k = xp.empty(K*3)
+uncontracted_V_matrix = xp.empty(K)
+
+print("Nuclear Kernel...")
 threads = 128
-blocks = (num_quads + threads - 1) // threads
-print("Beginning Kernel...")
-eri_kernel((blocks,), (threads,), (
-    quad_i,
-    quad_j,
-    np.int32(num_quads),
-    p_k,
-    P_k,
+blocks = (K + threads - 1) // threads
+nuclear_kernel((blocks,), (threads,), (
+    exp,
+    cen,
+    pow,
+    Z,
+    centers,
+    xp.int32(xp.size(Z)),
+    xp.int32(N),
+    uncontracted_V_matrix,
     Ex,
     Ey,
     Ez,
+    p_k,
+    P_k,
     nx,
     ny,
-    nz,
-    sx,
-    sy,
-    sz,
-    eri_values
+    nz
 ))
 cp.cuda.runtime.deviceSynchronize()
-print("Processing ERI...")
-uncontracted_ERI = xp.empty((K, K), dtype=xp.float64)
-uncontracted_ERI[quad_i, quad_j] = eri_values
-uncontracted_ERI[quad_j, quad_i] = eri_values
-uncontracted_ERI *= xp.outer(normals.ravel(), normals.ravel())*xp.outer(mult_coeffs.ravel(), mult_coeffs.ravel())
-ERI = contract_4d(uncontracted_ERI, contracted_position, max_contr)
-
-
-
-print("Nuclear Attraction...")
-uncontracted_V_matrix = normals*mult_coeffs*nuclear(E_x_coeffs, E_y_coeffs, E_z_coeffs, R_matrix, p)
+uncontracted_V_matrix = uncontracted_V_matrix.reshape((N, N))
 V_matrix = contract_2d(uncontracted_V_matrix, contracted_position, max_contr)
+
+eri_values = xp.empty((K, K), dtype=xp.float64)
+chunk_size = 256
+write = 0
+normals_K = normals.ravel()
+print("ERI Kernel...")
+while write != K:
+    write_to = min(write + chunk_size, K)
+    blocks = ((write_to-write) * K + threads - 1) // threads
+    eri_output_chunk = eri_values[write:write_to, :].ravel()
+    eri_kernel((blocks,), (threads,), (
+        write,
+        K,
+        (write_to-write)*K,
+        p_k,
+        P_k,
+        Ex,
+        Ey,
+        Ez,
+        nx,
+        ny,
+        nz,
+        max_e,
+        max_e,
+        max_e,
+        eri_output_chunk
+    ))
+    eri_output_chunk = eri_output_chunk.reshape(write_to-write, K)
+    eri_output_chunk *= normals_K[write:write_to][:, None]*normals_K[None, :]
+    write = write_to
+
+cp.cuda.runtime.deviceSynchronize()
+print("Processing ERI...")
+ERI = contract_4d(eri_values, contracted_position, max_contr)
 
 H_matrix = T_matrix + V_matrix
 
 E_NN = nuclear_repulsion(Z, centers)
-elec_count = xp.sum(Z) - xp.sum(net_charge)
+elec_count = xp.sum(Z) - molecular_charge
 
 print("Setting Up SCF...")
 eig_vals, U = xp.linalg.eigh(overlaps)
@@ -750,6 +951,7 @@ C_a, C_b = C, C
 
 total_spin = total_spin(unpaired_elec)
 mult = 2*total_spin + 1
+print(mult)
 N_a = (elec_count + mult - 1)/2
 N_b = (elec_count - mult + 1)/2
 N_e = N_a + N_b
@@ -811,12 +1013,11 @@ while True:
     P_b = P_b_new
     count += 1
 
-  #print(delta_E, delta_P)
 
 
 print("Initializing Grid...")
-padding = 4
-grid_spacing = 0.07
+padding = 3
+grid_spacing = 0.05
 minx = float(xp.min(centers[:, 0]) - padding)
 maxx = float(xp.max(centers[:, 0]) + padding)
 miny = float(xp.min(centers[:, 1]) - padding)
@@ -839,13 +1040,13 @@ Z_shape = xp.size(gridz)
 gridx = xp.broadcast_to(gridx[:, None, None], (X_shape, Y_shape, Z_shape))
 gridy = xp.broadcast_to(gridy[None, :, None], (X_shape, Y_shape, Z_shape))
 gridz = xp.broadcast_to(gridz[None, None, :], (X_shape, Y_shape, Z_shape))
-grid = xp.stack((gridx, gridy, gridz), axis=-1)
+grid = xp.stack((gridx, gridy, gridz), axis=-1, dtype=xp.float32)
 grid_shape = grid.shape[:-1]
 grid = grid.reshape(-1, 3)
 grid_len = int(grid.shape[0])
 
 print("Clearing VRAM...")
-keep = ["grid", "grid_len", "coeffs", "normals_1d", "cen", "pow", "exp", "P_a", "P_b", "xp", "np", "contract_1d", "contracted_position", "max_contr"]
+keep = ["grid", "grid_len", "coeffs", "normals_1d", "cen", "pow", "exp", "P_a", "P_b", "C_a", "xp", "np", "contract_1d", "contracted_position", "max_contr"]
 for name in list(globals().keys()):
     if not name.startswith('_') and name not in keep and name != 'cp' and name != 'gc':
         del globals()[name]
@@ -853,47 +1054,63 @@ gc.collect()
 cp.get_default_memory_pool().free_all_blocks()
 
 print("Evaluating Grid...")
-chunk_size = 3e6
+chunk_size = int(5e5)
 write = 0
-uncontracted_eval_grid = xp.empty((cen.shape[0], grid_len))
-while write != grid_len-1:
-    write_to = min(write+chunk_size, grid_len-1)
-    uncontracted_eval_grid[:, write:write_to] = (coeffs[:, None]
+coeffs = coeffs.astype(xp.float32)
+normals_1d = normals_1d.astype(xp.float32)
+cen = cen.astype(xp.float32)
+pow = pow.astype(xp.float32)
+C_a = C_a.astype(xp.float32)
+
+
+xp.save("preprocess/grid.npy", grid)
+total_file = np.lib.format.open_memmap(
+    "preprocess/total_density.npy",
+    mode="w+",
+    dtype=np.float32,
+    shape=(grid_len,)
+)
+
+spin_file = np.lib.format.open_memmap(
+    "preprocess/spin_density.npy",
+    mode="w+",
+    dtype=np.float32,
+    shape=(grid_len,)
+)
+
+orbital_file = np.lib.format.open_memmap(
+    "preprocess/orbital_density.npy",
+    mode="w+",
+    dtype=np.float32,
+    shape=(C_a.shape[0], grid_len)
+)
+print("Number of Orbitals: ", C_a.shape[0])
+C_a = C_a.T
+while write != grid_len:
+    write_to = min(write+chunk_size, grid_len)
+    uncontracted_chunk = (coeffs[:, None]
                       *normals_1d[:, None]
                       *xp.power(grid[write:write_to, 0][None, :] - cen[:, 0][:, None], pow[:, 0][:, None])
                       *xp.power(grid[write:write_to, 1][None, :] - cen[:, 1][:, None], pow[:, 1][:, None])
                       *xp.power(grid[write:write_to, 2][None, :] - cen[:, 2][:, None], pow[:, 2][:, None])
                       *xp.exp(-exp[:, None] * xp.sum(xp.square(grid[None, write:write_to, :] - cen[:, None, :]), axis=-1))
     )
+    chunk = contract_1d(uncontracted_chunk, contracted_position, max_contr)
+    alpha_chunk = xp.sum(P_a[:, :, None]*chunk[:, None, :]*chunk[None, :, :], axis=(0, 1))
+    beta_chunk = xp.sum(P_b[:, :, None] * chunk[:, None, :] * chunk[None, :, :], axis=(0, 1))
+    psi_chunk = C_a @ chunk
+    orbital_chunk = xp.square(psi_chunk)
+    total_chunk = alpha_chunk + beta_chunk
+    spin_chunk = alpha_chunk - beta_chunk
+    total_file[write:write_to] = xp.asnumpy(total_chunk)
+    spin_file[write:write_to] = xp.asnumpy(spin_chunk)
+    orbital_file[:, write:write_to] = xp.asnumpy(orbital_chunk)
     write = write_to
 
-print("Contracting...")
-eval_grid = contract_1d(uncontracted_eval_grid, contracted_position, max_contr)
-del uncontracted_eval_grid
-gc.collect()
-print("Densities...")
-grid_len = eval_grid.shape[0]
-alpha_density = xp.empty((grid_len,))
-beta_density = xp.empty((grid_len,))
-
-chunk_size = 1e5
-write = 0
-while write != grid_len-1:
-    write_to = min(write+chunk_size, grid_len-1)
-    alpha_density[write:write_to] = xp.sum(P_a[:, :, None]*eval_grid[:, None, write:write_to]*eval_grid[None, :, write:write_to], axis=(0, 1))
-    beta_density[write:write_to] = xp.sum(P_b[:, :, None] * eval_grid[:, None, write:write_to] * eval_grid[None, :, write:write_to], axis=(0, 1))
-    write = write_to
-
-alpha_density = xp.sum(P_a[:, :, None]*eval_grid[:, None, :]*eval_grid[None, :, :], axis=(0, 1))
-beta_density = xp.sum(P_b[:, :, None]*eval_grid[:, None, :]*eval_grid[None, :, :], axis=(0, 1))
-total_density = alpha_density + beta_density
-spin_density = alpha_density - beta_density
-print("Saving...")
-xp.save("data/total_density.npy", total_density)
-xp.save("data/spin_density.npy", spin_density)
 
 
 
+'''
 grid /= 5
 density_max = xp.max(total_density)
 tau = 1e-6
@@ -930,6 +1147,7 @@ spin_data = np.column_stack((grid[spin_mask], spin_rgb))
 
 np.savetxt("data/density_data.xyz", density_data, fmt=["%.7f", "%.7f", "%.7f", "%d", "%d", "%d"], delimiter=" ")
 np.savetxt("data/spin_data.xyz", spin_data, fmt=["%.7f", "%.7f", "%.7f", "%d", "%d", "%d"], delimiter=" ")
+'''
 '''
 #Complete checks:
 print("\n")
