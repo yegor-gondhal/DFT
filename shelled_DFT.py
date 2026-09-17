@@ -2,10 +2,10 @@ import gc
 import numpy as np
 import cupy as cp
 import cupyx.scipy.special as mspecial
-#import basis_set_exchange as bse
+# import basis_set_exchange as bse
 import json
-#import ragged
-#import awkward as ak
+# import ragged
+# import awkward as ak
 import time
 import math
 
@@ -13,15 +13,17 @@ xp = cp
 
 data = json.load(open("data1.json"))
 
+
 def combinations(added):
     total = []
-    for n in range(added+1):
-        for m in range(added+1):
-            for l in range(added+1):
-                if (l+m+n) == added:
+    for n in range(added + 1):
+        for m in range(added + 1):
+            for l in range(added + 1):
+                if (l + m + n) == added:
                     small_list = [l, m, n]
                     total.append(small_list)
     return total
+
 
 s_orb = [0, 0, 0]
 p_orb = combinations(1)
@@ -58,7 +60,6 @@ for i, atom in enumerate(atoms):
         l = instance[0]
         exponents = instance[1]
         coefficients = instance[2]
-
 
         if len(l) == 1:
             shell = {
@@ -116,7 +117,6 @@ for shell in shells:
     shell["ao_stop"] = current_ao + shell["n_ao"]
     current_ao = shell["ao_stop"]
 
-
 cen1 = []
 pow1 = []
 contracted_position = []
@@ -157,43 +157,51 @@ Z = xp.empty(len(atoms), xp.int32)
 for i in range(len(atoms)):
     Z[i] = int(atoms[i])
 
+
 def sym(matrix):
     return xp.isclose(matrix, matrix.T).all()
 
+
 def double_factorial(x):
-    term = xp.power(2, x/2)*mspecial.gamma(x/2 + 1)
+    term = xp.power(2, x / 2) * mspecial.gamma(x / 2 + 1)
     idxs = xp.where(x % 2.0 != 0.0)
-    term[idxs] *= xp.sqrt(2/xp.pi)
+    term[idxs] *= xp.sqrt(2 / xp.pi)
     return term
 
+
 def normal(alpha, pow):
-    term = xp.power((4*alpha), xp.sum(pow, axis=1))
-    term /= (double_factorial(2*pow[:, 0] - 1))
+    term = xp.power((4 * alpha), xp.sum(pow, axis=1))
+    term /= (double_factorial(2 * pow[:, 0] - 1))
     term /= (double_factorial(2 * pow[:, 1] - 1))
     term /= (double_factorial(2 * pow[:, 2] - 1))
     term = xp.sqrt(term)
-    return term * xp.power((2*alpha)/xp.pi, 0.75)
+    return term * xp.power((2 * alpha) / xp.pi, 0.75)
+
 
 def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     p = xp.add.outer(alpha, beta)
-    P = xp.add.outer(alpha*cen_a, beta*cen_b)/p
+    P = xp.add.outer(alpha * cen_a, beta * cen_b) / p
 
     a = P - cen_a[:, None]
     b = P - cen_b[None, :]
     max1 = int(xp.max(p1))
-    idxs_a = xp.arange(max1+1)
+    idxs_a = xp.arange(max1 + 1)
     idxs_a = xp.broadcast_to(idxs_a[None, None, :], (p.shape[0], p.shape[1], idxs_a.shape[0]))
     mask_a = (idxs_a <= p1[:, None, None])
     idx1, idx2, idx3 = xp.where(mask_a)
     u_plus_a = xp.zeros(mask_a.shape)
-    u_plus_a[idx1, idx2, idx3] = mspecial.binom(p1[idx1], idxs_a[idx1, idx2, idx3]) * xp.power(a[idx1, idx2], p1[idx1] - idxs_a[idx1, idx2, idx3])
+    u_plus_a[idx1, idx2, idx3] = mspecial.binom(p1[idx1], idxs_a[idx1, idx2, idx3]) * xp.power(a[idx1, idx2],
+                                                                                               p1[idx1] - idxs_a[
+                                                                                                   idx1, idx2, idx3])
     max1 = int(xp.max(p2))
     idxs_b = xp.arange(max1 + 1)
     idxs_b = xp.broadcast_to(idxs_b[None, None, :], (p.shape[0], p.shape[1], idxs_b.shape[0]))
     mask_b = (idxs_b <= p2[None, :, None])
     idx1, idx2, idx3 = xp.where(mask_b)
     u_plus_b = xp.zeros(mask_b.shape)
-    u_plus_b[idx1, idx2, idx3] = mspecial.binom(p2[idx2], idxs_b[idx1, idx2, idx3]) * xp.power(b[idx1, idx2], p2[idx2] - idxs_b[idx1, idx2, idx3])
+    u_plus_b[idx1, idx2, idx3] = mspecial.binom(p2[idx2], idxs_b[idx1, idx2, idx3]) * xp.power(b[idx1, idx2],
+                                                                                               p2[idx2] - idxs_b[
+                                                                                                   idx1, idx2, idx3])
 
     p = xp.add.outer(alpha, beta)
     outer_coeff = xp.subtract.outer(cen_a, cen_b, dtype=xp.float64)
@@ -202,8 +210,8 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     outer_coeff /= -p
     outer_coeff = xp.exp(outer_coeff)
 
-    inner_coeff = u_plus_a[:, :, :, None]*u_plus_b[:, :, None, :]
-    u_matrix = idxs_a[:, :, :, None]+idxs_b[:, :, None, :]
+    inner_coeff = u_plus_a[:, :, :, None] * u_plus_b[:, :, None, :]
+    u_matrix = idxs_a[:, :, :, None] + idxs_b[:, :, None, :]
     int_matrix = xp.zeros_like(u_matrix, dtype=xp.float64)
     idxs = xp.where(u_matrix % 2.0 == 0.0)
     int_matrix[idxs] = double_factorial(u_matrix[idxs] - 1)
@@ -212,27 +220,32 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     int_matrix[idxs] *= xp.power(p[idxs[:2]], -0.5 * (u_matrix[idxs] + 1))
     int_matrix *= inner_coeff
     int_matrix = xp.sum(int_matrix, axis=(-1, -2))
-    return int_matrix*outer_coeff
+    return int_matrix * outer_coeff
+
 
 def T_raw(exp, cen, pow, prev_overlap):
-    result = -2*exp[None, :]*(2*pow[None, :] + 1)*prev_overlap
-    result += 4*xp.square(exp[None, :])*overlap(exp, exp, cen, cen, pow, pow+2)
+    result = -2 * exp[None, :] * (2 * pow[None, :] + 1) * prev_overlap
+    result += 4 * xp.square(exp[None, :]) * overlap(exp, exp, cen, cen, pow, pow + 2)
     if xp.any(pow >= 2):
         idxs = xp.where(pow >= 2)[0]
-        result[:, idxs] += pow[idxs][None, :]*(pow[idxs][None, :] - 1)*overlap(exp, exp[idxs], cen, cen[idxs], pow, pow[idxs]-2)
+        result[:, idxs] += pow[idxs][None, :] * (pow[idxs][None, :] - 1) * overlap(exp, exp[idxs], cen, cen[idxs], pow,
+                                                                                   pow[idxs] - 2)
     return result
 
+
 def boys_large(m, t):
-    term = mspecial.gammainc(m + 0.5, t)*mspecial.gamma(m + 0.5)
-    term /= 2*xp.power(t, m + 0.5) + 1e-40
+    term = mspecial.gammainc(m + 0.5, t) * mspecial.gamma(m + 0.5)
+    term /= 2 * xp.power(t, m + 0.5) + 1e-40
     return term
+
 
 def boys_small(m, t):
     k = xp.arange(30)
     term = xp.power(-t[:, None], k[None, :])
     term /= mspecial.gamma(k[None, :] + 1)
-    term1 = 2*m[:, None] + 2*k[None, :] + 1
-    return xp.sum(term/term1, axis=-1)
+    term1 = 2 * m[:, None] + 2 * k[None, :] + 1
+    return xp.sum(term / term1, axis=-1)
+
 
 def boys(m, t):
     result = xp.empty_like(t)
@@ -241,17 +254,19 @@ def boys(m, t):
     result[~mask] = boys_small(m[~mask], t[~mask])
     return result
 
+
 def get_idx(arr1, arr2):
     mask1 = (arr1[:, 0][:, None] == arr2[:, 0][None, :])
     mask2 = (arr1[:, 1][:, None] == arr2[:, 1][None, :])
     mask = mask1 & mask2
     return xp.argwhere(mask)[:, 1]
 
+
 def calc_E_1d(exp, cen, pow):
     alpha = xp.broadcast_to(exp[:, None], (exp.shape[0], exp.shape[0]))
     beta = xp.broadcast_to(exp[None, :], (exp.shape[0], exp.shape[0]))
     p = alpha + beta
-    q = xp.outer(exp, exp)/p
+    q = xp.outer(exp, exp) / p
     cen_sep = xp.subtract.outer(cen, cen).astype(xp.float64)
 
     prefactor = xp.square(cen_sep)
@@ -288,7 +303,7 @@ def calc_E_1d(exp, cen, pow):
         super_j_idx = get_idx(j_idxs, idxs)
 
         N = int(xp.sum(mask))
-        store_E = xp.empty((N, i+2))
+        store_E = xp.empty((N, i + 2))
 
         N_i = int(xp.sum(i_mask))
         N_j = int(xp.sum(j_mask))
@@ -299,21 +314,21 @@ def calc_E_1d(exp, cen, pow):
         super_i_prev_idx = get_idx(i_idxs, prev_idxs)
         super_j_prev_idx = get_idx(j_idxs, prev_idxs)
 
-        for need_t in range(i+2):
+        for need_t in range(i + 2):
             i_term = xp.zeros(N_i)
             j_term = xp.zeros(N_j)
 
             if need_t <= i:
-                i_term += -1*beta[i_mask]*cen_sep[i_mask]*prev_E[super_i_prev_idx, need_t]/p[i_mask]
-                j_term += alpha[j_mask]*cen_sep[j_mask]*prev_E[super_j_prev_idx, need_t]/p[j_mask]
+                i_term += -1 * beta[i_mask] * cen_sep[i_mask] * prev_E[super_i_prev_idx, need_t] / p[i_mask]
+                j_term += alpha[j_mask] * cen_sep[j_mask] * prev_E[super_j_prev_idx, need_t] / p[j_mask]
 
             if need_t > 0:
-                i_term += prev_E[super_i_prev_idx, need_t-1]/(2*p[i_mask])
-                j_term += prev_E[super_j_prev_idx, need_t-1]/(2*p[j_mask])
+                i_term += prev_E[super_i_prev_idx, need_t - 1] / (2 * p[i_mask])
+                j_term += prev_E[super_j_prev_idx, need_t - 1] / (2 * p[j_mask])
 
             if need_t < i:
-                i_term += prev_E[super_i_prev_idx, need_t+1]*(need_t+1)
-                j_term += prev_E[super_j_prev_idx, need_t+1]*(need_t+1)
+                i_term += prev_E[super_i_prev_idx, need_t + 1] * (need_t + 1)
+                j_term += prev_E[super_j_prev_idx, need_t + 1] * (need_t + 1)
 
             store_E[super_i_idx, need_t] = i_term
             store_E[super_j_idx, need_t] = j_term
@@ -338,11 +353,12 @@ def calc_E_1d(exp, cen, pow):
             E_coeffs[row][col] = e_val
 
     return E_coeffs
-    #return added_E_coeffs, added_E_idxs, prefactor
+    # return added_E_coeffs, added_E_idxs, prefactor
+
 
 def calc_R(exp, cen, pow, centers):
-    p = exp[:, None]+exp[None, :]
-    P = ((exp[:, None]*cen)[:, None, :] + (exp[:, None]*cen)[None, :, :])/p[..., None]
+    p = exp[:, None] + exp[None, :]
+    P = ((exp[:, None] * cen)[:, None, :] + (exp[:, None] * cen)[None, :, :]) / p[..., None]
 
     T = P[:, :, None, :] - centers[None, None, :, :]
     T = xp.sum(xp.square(T), axis=-1) * p[:, :, None]
@@ -365,7 +381,7 @@ def calc_R(exp, cen, pow, centers):
             n_arr = xp.arange(n_len)
             n_arr = xp.broadcast_to(n_arr[None, :], (T.shape[2], n_len))
             boys_t = xp.broadcast_to(T[i, j, :, None], (T.shape[2], n_len))
-            R[0, 0, 0, :, :] = xp.power(-2*p[i, j], n_arr)*boys(n_arr, boys_t)
+            R[0, 0, 0, :, :] = xp.power(-2 * p[i, j], n_arr) * boys(n_arr, boys_t)
 
             for x in range(x_len):
                 for y in range(y_len):
@@ -373,43 +389,46 @@ def calc_R(exp, cen, pow, centers):
                         if x == 0 and y == 0 and z == 0:
                             continue
                         if (x != 0):
-                            R[x, y, z, :, :-1] = (P[i, j, 0] - centers[:, 0])[:, None]*R[x-1, y, z, :, 1:]
+                            R[x, y, z, :, :-1] = (P[i, j, 0] - centers[:, 0])[:, None] * R[x - 1, y, z, :, 1:]
                             if x > 1:
-                                R[x, y, z, :, :-1] += (x-1)*R[x-2, y, z, :, 1:]
+                                R[x, y, z, :, :-1] += (x - 1) * R[x - 2, y, z, :, 1:]
                         elif (y != 0):
-                            R[x, y, z, :, :-1] = (P[i, j, 1] - centers[:, 1])[:, None] * R[x, y-1, z, :, 1:]
+                            R[x, y, z, :, :-1] = (P[i, j, 1] - centers[:, 1])[:, None] * R[x, y - 1, z, :, 1:]
                             if y > 1:
-                                R[x, y, z, :, :-1] += (y - 1) * R[x, y-2, z, :, 1:]
+                                R[x, y, z, :, :-1] += (y - 1) * R[x, y - 2, z, :, 1:]
                         else:
-                            R[x, y, z, :, :-1] = (P[i, j, 2] - centers[:, 2])[:, None] * R[x, y, z-1, :, 1:]
+                            R[x, y, z, :, :-1] = (P[i, j, 2] - centers[:, 2])[:, None] * R[x, y, z - 1, :, 1:]
                             if z > 1:
-                                R[x, y, z, :, :-1] += (z - 1) * R[x, y, z-2, :, 1:]
+                                R[x, y, z, :, :-1] += (z - 1) * R[x, y, z - 2, :, 1:]
 
             R_row.append(R[..., 0])
         R_matrix.append(R_row)
     return R_matrix, p, P
+
 
 def nuclear(Ex, Ey, Ez, R, p):
     nuclear = xp.empty((len(Ex), len(Ex), centers.shape[0]))
 
     for i in range(len(Ex)):
         for j in range(len(Ex[0])):
-            V = Ex[i][j][:, None, None, None]*Ey[i][j][None, :, None, None]*Ez[i][j][None, None, :, None]*R[i][j]
+            V = Ex[i][j][:, None, None, None] * Ey[i][j][None, :, None, None] * Ez[i][j][None, None, :, None] * R[i][j]
             nuclear[i, j, :] = xp.sum(V, axis=(0, 1, 2))
 
     nuclear *= Z[None, None, :]
     nuclear = xp.sum(nuclear, axis=-1)
-    nuclear *= -2*xp.pi/p
+    nuclear *= -2 * xp.pi / p
 
     return nuclear
+
 
 def nuclear_repulsion(Z, centers):
     result = 0.0
     for i in range(len(Z)):
         for j in range(len(Z)):
             if i < j:
-                result += Z[i]*Z[j]/xp.linalg.norm(centers[i] - centers[j])
+                result += Z[i] * Z[j] / xp.linalg.norm(centers[i] - centers[j])
     return result
+
 
 source = f"""
 #include <math_constants.h>
@@ -476,32 +495,32 @@ __device__ void convolution(const double* E, int E_i, int E_j, int len_i, int le
 __device__ void calc_E(double alpha, double beta, double A, double B, int la, int lb, double* E) {{
     double prev[max_e];
     double next[max_e];
-    
+
     for (int t = 0; t < max_e; ++t) {{
         prev[t] = 0.0;
         next[t] = 0.0;
         E[t] = 0.0;
     }}
-    
+
     double p = alpha + beta;
     double q = alpha*beta/p;
     double Q = A - B;
-    
+
     prev[0] = exp(-q*Q*Q);
     int order = 0;
     for (int step = 0; step < la; ++step) {{
         int new_order = order + 1;
         for (int t = 0; t < new_order; ++t) {{
             double value = 0.0;
-            
+
             if (t <= order) {{
                 value -= (beta*Q/p)*prev[t];
             }}
-            
+
             if (t > 0) {{
                 value += prev[t-1]/(2.0*p);
             }}
-            
+
             if (t + 1 <= order) {{
                 value += (t+1)*prev[t+1];
             }}
@@ -512,20 +531,20 @@ __device__ void calc_E(double alpha, double beta, double A, double B, int la, in
             prev[t] = next[t];
         }}
     }}
-    
+
     for (int step = 0; step < lb; ++step) {{
         int new_order = order + 1;
         for (int t = 0; t < new_order; ++t) {{
             double value = 0.0;
-            
+
             if (t <= order) {{
                 value += (alpha*Q/p)*prev[t];
             }}
-            
+
             if (t > 0) {{
                 value += prev[t-1]/(2.0*p);
             }}
-            
+
             if (t + 1 <= order) {{
                 value += (t+1)*prev[t+1];
             }}
@@ -542,12 +561,12 @@ __device__ void calc_E(double alpha, double beta, double A, double B, int la, in
 }}
 
 __device__ void calc_R(int x_len, int y_len, int z_len, int n_len, double dx, double dy, double dz, double param, double* R) {{
-    
+
     double T = param*(dx*dx + dy*dy + dz*dz);
     double F[max_boys];
     boys(n_len, T, F);
     double scale = 1.0;
-    
+
     for (int n = 0; n < n_len; ++n) {{
         R[RIDX(0, 0, 0, n)] = scale*F[n];
         scale *= -2.0*param;
@@ -613,22 +632,22 @@ extern "C" __global__ void nuclear_kernel(
     int* ny_output,
     int* nz_output
     ) {{
-    
+
     long long q = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    
+
     long long num_pairs = (long long)num_funcs * (long long)num_funcs;
-    
+
     if (q >= num_pairs) {{
         return;
     }}
-    
+
     int a = q / num_funcs;
     int b = q % num_funcs;
-    
+
     double Ex[max_e];
     double Ey[max_e];
     double Ez[max_e];
-    
+
     double e1 = exp[a];
     double e2 = exp[b];
     double c1x = cen[3*a];
@@ -643,11 +662,11 @@ extern "C" __global__ void nuclear_kernel(
     int p2y = pow[3*b+1];
     int p1z = pow[3*a+2];
     int p2z = pow[3*b+2];
-    
+
     calc_E(e1, e2, c1x, c2x, p1x, p2x, Ex);
     calc_E(e1, e2, c1y, c2y, p1y, p2y, Ey);
     calc_E(e1, e2, c1z, c2z, p1z, p2z, Ez);
-    
+
     double p = e1 + e2;
     double Px = (e1*c1x + e2*c2x)/p;
     double Py = (e1*c1y + e2*c2y)/p;
@@ -657,10 +676,10 @@ extern "C" __global__ void nuclear_kernel(
     int y_len = p1y + p2y + 1;
     int z_len = p1z + p2z + 1;
     int n_len = x_len + y_len + z_len - 2;
-    
+
     double R[max_r];
     double value = 0.0;
-    
+
     for (int atom = 0; atom < num_atoms; ++atom) {{
         double dx = Px - atom_centers[3*atom];
         double dy = Py - atom_centers[3*atom+1];
@@ -742,7 +761,7 @@ void eri_kernel(
     double r_ij1 = P_k[3*i+1] - P_k[3*j+1];
     double r_ij2 = P_k[3*i+2] - P_k[3*j+2];
     double R[max_r];
-    
+
     calc_R(x_len, y_len, z_len, n_len, r_ij0, r_ij1, r_ij2, rho, R);
 
     double Cx[max_conv];
@@ -769,12 +788,13 @@ void eri_kernel(
 }}
 """
 
+
 def pack_E(E):
     N = len(E)
     rows = [E[a][b] for a in range(N) for b in range(N)]
     lengths = np.asarray([row.size for row in rows], dtype=np.int32)
     stride = int(lengths.max())
-    packed = xp.zeros((N*N, stride), dtype=xp.float64)
+    packed = xp.zeros((N * N, stride), dtype=xp.float64)
     for pair, row in enumerate(rows):
         packed[pair, :row.size] = row
     return packed.ravel(), xp.asarray(lengths, dtype=xp.int32), stride
@@ -790,7 +810,8 @@ def total_spin(unpaired_elec):
         reshaped_pair = pairs[i].reshape(shape)
         total_sum = total_sum + reshaped_pair
 
-    return xp.min(xp.abs(total_sum))/2
+    return xp.min(xp.abs(total_sum)) / 2
+
 
 def UHF_density(C_a, C_b, N_a, N_b):
     arr_a = xp.arange(0, N_a)
@@ -804,6 +825,7 @@ def UHF_density(C_a, C_b, N_a, N_b):
 
     return P_a, P_b
 
+
 def contract_2d(matrix, contracted_position, max_contr):
     cols = int(matrix.shape[1])
     temp = xp.zeros((max_contr, cols))
@@ -813,6 +835,7 @@ def contract_2d(matrix, contracted_position, max_contr):
     new_matrix = xp.zeros((max_contr, cols))
     xp.add.at(new_matrix, contracted_position, temp)
     return new_matrix.T
+
 
 def contract_4d(matrix, contracted_position, max_contr):
     N = int(xp.sqrt(matrix.shape[0]))
@@ -838,11 +861,13 @@ def contract_4d(matrix, contracted_position, max_contr):
 
     return temp3
 
+
 def contract_1d(matrix, contracted_position, max_contr):
     cols = int(matrix.shape[1])
     temp = xp.zeros((max_contr, cols), dtype=xp.float32)
     xp.add.at(temp, contracted_position, matrix)
     return temp
+
 
 print("Max exponent: ", xp.max(exp))
 print("Min exponent: ", xp.min(exp))
@@ -869,17 +894,17 @@ T_y = T_raw(exp, cen[:, 1], pow[:, 1], overlapy)
 T_z = T_raw(exp, cen[:, 2], pow[:, 2], overlapz)
 
 print("Processing Overlap...")
-uncontracted_overlaps = normals*mult_coeffs*overlapx*overlapy*overlapz
+uncontracted_overlaps = normals * mult_coeffs * overlapx * overlapy * overlapz
 overlaps = contract_2d(uncontracted_overlaps, contracted_position, max_contr)
 
 print("Processing T Matrix...")
-uncontracted_T_primitive = T_x*overlapy*overlapz + T_y*overlapx*overlapz + T_z*overlapx*overlapy
-uncontracted_T_matrix = -0.5*normals*mult_coeffs*uncontracted_T_primitive
+uncontracted_T_primitive = T_x * overlapy * overlapz + T_y * overlapx * overlapz + T_z * overlapx * overlapy
+uncontracted_T_matrix = -0.5 * normals * mult_coeffs * uncontracted_T_primitive
 T_matrix = contract_2d(uncontracted_T_matrix, contracted_position, max_contr)
 
 print("Setting Up Kernel...")
 N = int(xp.size(exp))
-K = N**2
+K = N ** 2
 module = cp.RawModule(
     code=source,
     name_expressions=(
@@ -889,17 +914,17 @@ module = cp.RawModule(
 )
 nuclear_kernel = module.get_function("nuclear_kernel")
 eri_kernel = module.get_function("eri_kernel")
-cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize,32768)
+cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize, 32768)
 
 max_e = 7
-Ex = xp.empty((K*max_e))
-Ey = xp.empty((K*max_e))
-Ez = xp.empty((K*max_e))
+Ex = xp.empty((K * max_e))
+Ey = xp.empty((K * max_e))
+Ez = xp.empty((K * max_e))
 nx = xp.empty(K, xp.int32)
 ny = xp.empty(K, xp.int32)
 nz = xp.empty(K, xp.int32)
 p_k = xp.empty(K)
-P_k = xp.empty(K*3)
+P_k = xp.empty(K * 3)
 uncontracted_V_matrix = xp.empty(K)
 
 print("Nuclear Kernel...")
@@ -934,12 +959,12 @@ normals_K = normals.ravel()
 print("ERI Kernel...")
 while write != K:
     write_to = min(write + chunk_size, K)
-    blocks = ((write_to-write) * K + threads - 1) // threads
+    blocks = ((write_to - write) * K + threads - 1) // threads
     eri_output_chunk = eri_values[write:write_to, :].ravel()
     eri_kernel((blocks,), (threads,), (
         write,
         K,
-        (write_to-write)*K,
+        (write_to - write) * K,
         p_k,
         P_k,
         Ex,
@@ -953,8 +978,8 @@ while write != K:
         max_e,
         eri_output_chunk
     ))
-    eri_output_chunk = eri_output_chunk.reshape(write_to-write, K)
-    eri_output_chunk *= normals_K[write:write_to][:, None]*normals_K[None, :]
+    eri_output_chunk = eri_output_chunk.reshape(write_to - write, K)
+    eri_output_chunk *= normals_K[write:write_to][:, None] * normals_K[None, :]
     write = write_to
 
 cp.cuda.runtime.deviceSynchronize()
@@ -981,10 +1006,10 @@ C = X @ C_prime
 C_a, C_b = C, C
 
 total_spin = total_spin(unpaired_elec)
-mult = 2*total_spin + 1
+mult = 2 * total_spin + 1
 print(mult)
-N_a = (elec_count + mult - 1)/2
-N_b = (elec_count - mult + 1)/2
+N_a = (elec_count + mult - 1) / 2
+N_b = (elec_count - mult + 1) / 2
 N_e = N_a + N_b
 
 print("SCF...")
@@ -1007,7 +1032,7 @@ while True:
     Fock_a = H_matrix + J_matrix - K_a
     Fock_b = H_matrix + J_matrix - K_b
 
-    E_elec = 0.5*xp.sum(P*H_matrix + P_a*Fock_a + P_b*Fock_b)
+    E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
     E_total_new = E_elec + E_NN
     delta_E = xp.abs(E_total_new - E_total)
     Fock_a_prime = X_t @ Fock_a @ X
@@ -1044,8 +1069,6 @@ while True:
     P_b = P_b_new
     count += 1
 
-
-
 print("Initializing Grid...")
 padding = 3
 grid_spacing = 0.05
@@ -1056,9 +1079,9 @@ maxy = float(xp.max(centers[:, 1]) + padding)
 minz = float(xp.min(centers[:, 2]) - padding)
 maxz = float(xp.max(centers[:, 2]) + padding)
 
-x_space = math.ceil((maxx-minx)/grid_spacing)+1
-y_space = math.ceil((maxy-miny)/grid_spacing)+1
-z_space = math.ceil((maxz-minz)/grid_spacing)+1
+x_space = math.ceil((maxx - minx) / grid_spacing) + 1
+y_space = math.ceil((maxy - miny) / grid_spacing) + 1
+z_space = math.ceil((maxz - minz) / grid_spacing) + 1
 print("X_space: ", x_space)
 print("Y_space: ", y_space)
 print("Z_space: ", z_space)
@@ -1077,7 +1100,8 @@ grid = grid.reshape(-1, 3)
 grid_len = int(grid.shape[0])
 
 print("Clearing VRAM...")
-keep = ["grid", "grid_len", "coeffs", "normals_1d", "cen", "pow", "exp", "P_a", "P_b", "C_a", "xp", "np", "contract_1d", "contracted_position", "max_contr"]
+keep = ["grid", "grid_len", "coeffs", "normals_1d", "cen", "pow", "exp", "P_a", "P_b", "C_a", "xp", "np", "contract_1d",
+        "contracted_position", "max_contr"]
 for name in list(globals().keys()):
     if not name.startswith('_') and name not in keep and name != 'cp' and name != 'gc':
         del globals()[name]
@@ -1092,7 +1116,6 @@ normals_1d = normals_1d.astype(xp.float32)
 cen = cen.astype(xp.float32)
 pow = pow.astype(xp.float32)
 C_a = C_a.astype(xp.float32)
-
 
 xp.save("preprocess/grid.npy", grid)
 total_file = np.lib.format.open_memmap(
@@ -1120,16 +1143,17 @@ orbital_file = np.lib.format.open_memmap(
 )
 C_a = C_a.T
 while write != grid_len:
-    write_to = min(write+chunk_size, grid_len)
+    write_to = min(write + chunk_size, grid_len)
     uncontracted_chunk = (coeffs[:, None]
-                      *normals_1d[:, None]
-                      *xp.power(grid[write:write_to, 0][None, :] - cen[:, 0][:, None], pow[:, 0][:, None])
-                      *xp.power(grid[write:write_to, 1][None, :] - cen[:, 1][:, None], pow[:, 1][:, None])
-                      *xp.power(grid[write:write_to, 2][None, :] - cen[:, 2][:, None], pow[:, 2][:, None])
-                      *xp.exp(-exp[:, None] * xp.sum(xp.square(grid[None, write:write_to, :] - cen[:, None, :]), axis=-1))
-    )
+                          * normals_1d[:, None]
+                          * xp.power(grid[write:write_to, 0][None, :] - cen[:, 0][:, None], pow[:, 0][:, None])
+                          * xp.power(grid[write:write_to, 1][None, :] - cen[:, 1][:, None], pow[:, 1][:, None])
+                          * xp.power(grid[write:write_to, 2][None, :] - cen[:, 2][:, None], pow[:, 2][:, None])
+                          * xp.exp(
+                -exp[:, None] * xp.sum(xp.square(grid[None, write:write_to, :] - cen[:, None, :]), axis=-1))
+                          )
     chunk = contract_1d(uncontracted_chunk, contracted_position, max_contr)
-    alpha_chunk = xp.sum(P_a[:, :, None]*chunk[:, None, :]*chunk[None, :, :], axis=(0, 1))
+    alpha_chunk = xp.sum(P_a[:, :, None] * chunk[:, None, :] * chunk[None, :, :], axis=(0, 1))
     beta_chunk = xp.sum(P_b[:, :, None] * chunk[:, None, :] * chunk[None, :, :], axis=(0, 1))
     psi_chunk = C_a @ chunk
     orbital_chunk = xp.square(psi_chunk)
@@ -1139,9 +1163,6 @@ while write != grid_len:
     spin_file[write:write_to] = xp.asnumpy(spin_chunk)
     orbital_file[:, write:write_to] = xp.asnumpy(orbital_chunk)
     write = write_to
-
-
-
 
 '''
 grid /= 5
