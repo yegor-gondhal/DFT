@@ -69,6 +69,7 @@ for i, atom in enumerate(atoms):
                 "exponents": xp.array(exponents),
                 "coefficients": xp.array(coefficients),
             }
+            shells.append(shell)
         elif len(l) == len(coefficients):
             for momentum, coef_row in zip(l, coefficients):
                 shell = {
@@ -76,8 +77,9 @@ for i, atom in enumerate(atoms):
                     "atom_pos": xp.array(centers[i]),
                     "angular_momentum": momentum,
                     "exponents": xp.array(exponents),
-                    "coefficients": xp.array(coef_row),
+                    "coefficients": xp.array([coef_row]),
                 }
+                shells.append(shell)
         else:
             raise ValueError("Something went wrong")
 
@@ -107,51 +109,7 @@ for i, atom in enumerate(atoms):
                     pow.append(f)
             '''
 
-current_ao = 0
-for shell in shells:
-    shell["components"] = combinations(shell["angular_momentum"])
-    shell["n_components"] = len(shell["components"])
-    shell["n_contractions"] = shell["coefficients"].shape[0]
-    shell["n_ao"] = shell["n_components"] * shell["n_contractions"]
-    shell["ao_start"] = current_ao
-    shell["ao_stop"] = current_ao + shell["n_ao"]
-    current_ao = shell["ao_stop"]
 
-cen1 = []
-pow1 = []
-contracted_position = []
-for i, e in enumerate(exp):
-    tempcen = []
-    temppow = []
-    tempcontr = []
-    for _ in range(len(e)):
-        tempcen.append(cen[i])
-        temppow.append(pow[i])
-        tempcontr.append(i)
-    cen1.append(tempcen)
-    pow1.append(temppow)
-    contracted_position.append(tempcontr)
-
-exp = [j for i in exp for j in i]
-coeffs = [j for i in coeffs for j in i]
-cen = [j for i in cen1 for j in i]
-pow = [j for i in pow1 for j in i]
-contracted_position = [j for i in contracted_position for j in i]
-
-exp = xp.array(exp)
-coeffs = xp.array(coeffs)
-cen = xp.array(cen)
-pow = xp.array(pow, dtype=xp.int32)
-contracted_position = xp.array(contracted_position)
-
-mask = (coeffs != 0.0)
-exp = exp[mask]
-coeffs = coeffs[mask]
-cen = cen[mask]
-pow = pow[mask]
-contracted_position = contracted_position[mask]
-
-max_contr = int(xp.max(contracted_position) + 1)
 centers = xp.array(centers)
 Z = xp.empty(len(atoms), xp.int32)
 for i in range(len(atoms)):
@@ -182,11 +140,13 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     p = xp.add.outer(alpha, beta)
     P = xp.add.outer(alpha * cen_a, beta * cen_b) / p
 
-    a = P - cen_a[:, None]
-    b = P - cen_b[None, :]
+    a = P - cen_a
+    b = P - cen_b
     max1 = int(xp.max(p1))
     idxs_a = xp.arange(max1 + 1)
     idxs_a = xp.broadcast_to(idxs_a[None, None, :], (p.shape[0], p.shape[1], idxs_a.shape[0]))
+    print(idxs_a.shape)
+    print(p1.shape, "\n")
     mask_a = (idxs_a <= p1[:, None, None])
     idx1, idx2, idx3 = xp.where(mask_a)
     u_plus_a = xp.zeros(mask_a.shape)
@@ -202,11 +162,11 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     u_plus_b[idx1, idx2, idx3] = mspecial.binom(p2[idx2], idxs_b[idx1, idx2, idx3]) * xp.power(b[idx1, idx2],
                                                                                                p2[idx2] - idxs_b[
                                                                                                    idx1, idx2, idx3])
-
+    #print("entered")
     p = xp.add.outer(alpha, beta)
-    outer_coeff = xp.subtract.outer(cen_a, cen_b, dtype=xp.float64)
+    outer_coeff = cen_a - cen_b
     outer_coeff = xp.square(outer_coeff)
-    outer_coeff *= xp.outer(alpha, beta)
+    outer_coeff = outer_coeff[None, None]*xp.outer(alpha, beta)
     outer_coeff /= -p
     outer_coeff = xp.exp(outer_coeff)
 
@@ -868,397 +828,22 @@ def contract_1d(matrix, contracted_position, max_contr):
     xp.add.at(temp, contracted_position, matrix)
     return temp
 
+total_ao = 0
+for shell in shells:
+    shell["components"] = xp.array(combinations(shell["angular_momentum"]))
+    shell["n_components"] = len(shell["components"])
+    shell["n_contractions"] = shell["coefficients"].shape[0]
+    shell["n_ao"] = shell["n_components"] * shell["n_contractions"]
+    shell["ao_start"] = total_ao
+    shell["ao_stop"] = total_ao + shell["n_ao"]
+    shell["normalization"] = normal(shell["exponents"][:, None], shell["components"])
+    current_ao = shell["ao_stop"]
 
-print("Max exponent: ", xp.max(exp))
-print("Min exponent: ", xp.min(exp))
-print("Max position: ", xp.max(cen))
-print("Min position: ", xp.min(cen))
-print("Max power: ", xp.max(pow))
-print("Min power: ", xp.min(pow), "\n")
+overlaps = xp.empty((total_ao, total_ao))
 
-print("Num Funcs: ", xp.size(exp), "\n")
+for i, shell_a in enumerate(shells):
+    for j in range(i+1):
+        print(j)
+        shell_b = shells[j]
+        overlapx = overlap(shell_a["exponents"], shell_b["exponents"], shell_a["atom_pos"][0], shell_b["atom_pos"][0], shell_a["components"][:, 0], shell_b["components"][:, 0])
 
-print("Coeffs...")
-normals_1d = normal(exp, pow)
-normals = xp.outer(normals_1d, normals_1d)
-mult_coeffs = xp.outer(coeffs, coeffs)
-
-print("Overlap...")
-overlapx = overlap(exp, exp, cen[:, 0], cen[:, 0], pow[:, 0], pow[:, 0])
-overlapy = overlap(exp, exp, cen[:, 1], cen[:, 1], pow[:, 1], pow[:, 1])
-overlapz = overlap(exp, exp, cen[:, 2], cen[:, 2], pow[:, 2], pow[:, 2])
-
-print("T Matrix...")
-T_x = T_raw(exp, cen[:, 0], pow[:, 0], overlapx)
-T_y = T_raw(exp, cen[:, 1], pow[:, 1], overlapy)
-T_z = T_raw(exp, cen[:, 2], pow[:, 2], overlapz)
-
-print("Processing Overlap...")
-uncontracted_overlaps = normals * mult_coeffs * overlapx * overlapy * overlapz
-overlaps = contract_2d(uncontracted_overlaps, contracted_position, max_contr)
-
-print("Processing T Matrix...")
-uncontracted_T_primitive = T_x * overlapy * overlapz + T_y * overlapx * overlapz + T_z * overlapx * overlapy
-uncontracted_T_matrix = -0.5 * normals * mult_coeffs * uncontracted_T_primitive
-T_matrix = contract_2d(uncontracted_T_matrix, contracted_position, max_contr)
-
-print("Setting Up Kernel...")
-N = int(xp.size(exp))
-K = N ** 2
-module = cp.RawModule(
-    code=source,
-    name_expressions=(
-        "nuclear_kernel",
-        "eri_kernel",
-    ),
-)
-nuclear_kernel = module.get_function("nuclear_kernel")
-eri_kernel = module.get_function("eri_kernel")
-cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize, 32768)
-
-max_e = 7
-Ex = xp.empty((K * max_e))
-Ey = xp.empty((K * max_e))
-Ez = xp.empty((K * max_e))
-nx = xp.empty(K, xp.int32)
-ny = xp.empty(K, xp.int32)
-nz = xp.empty(K, xp.int32)
-p_k = xp.empty(K)
-P_k = xp.empty(K * 3)
-uncontracted_V_matrix = xp.empty(K)
-
-print("Nuclear Kernel...")
-threads = 128
-blocks = (K + threads - 1) // threads
-nuclear_kernel((blocks,), (threads,), (
-    exp,
-    cen,
-    pow,
-    Z,
-    centers,
-    xp.int32(xp.size(Z)),
-    xp.int32(N),
-    uncontracted_V_matrix,
-    Ex,
-    Ey,
-    Ez,
-    p_k,
-    P_k,
-    nx,
-    ny,
-    nz
-))
-cp.cuda.runtime.deviceSynchronize()
-uncontracted_V_matrix = uncontracted_V_matrix.reshape((N, N))
-V_matrix = contract_2d(uncontracted_V_matrix, contracted_position, max_contr)
-
-eri_values = xp.empty((K, K), dtype=xp.float64)
-chunk_size = 256
-write = 0
-normals_K = normals.ravel()
-print("ERI Kernel...")
-while write != K:
-    write_to = min(write + chunk_size, K)
-    blocks = ((write_to - write) * K + threads - 1) // threads
-    eri_output_chunk = eri_values[write:write_to, :].ravel()
-    eri_kernel((blocks,), (threads,), (
-        write,
-        K,
-        (write_to - write) * K,
-        p_k,
-        P_k,
-        Ex,
-        Ey,
-        Ez,
-        nx,
-        ny,
-        nz,
-        max_e,
-        max_e,
-        max_e,
-        eri_output_chunk
-    ))
-    eri_output_chunk = eri_output_chunk.reshape(write_to - write, K)
-    eri_output_chunk *= normals_K[write:write_to][:, None] * normals_K[None, :]
-    write = write_to
-
-cp.cuda.runtime.deviceSynchronize()
-print("Processing ERI...")
-ERI = contract_4d(eri_values, contracted_position, max_contr)
-
-H_matrix = T_matrix + V_matrix
-
-E_NN = nuclear_repulsion(Z, centers)
-elec_count = xp.sum(Z) - molecular_charge
-
-print("Setting Up SCF...")
-eig_vals, U = xp.linalg.eigh(overlaps)
-s = xp.power(eig_vals, -0.5)
-s = xp.diag(s)
-U_t = U.T
-X = U @ s @ U_t
-X_t = X.T
-
-F = T_matrix + V_matrix
-F_prime = X_t @ F @ X
-orb_energy, C_prime = xp.linalg.eigh(F_prime)
-C = X @ C_prime
-C_a, C_b = C, C
-
-total_spin = total_spin(unpaired_elec)
-mult = 2 * total_spin + 1
-print(mult)
-N_a = (elec_count + mult - 1) / 2
-N_b = (elec_count - mult + 1) / 2
-N_e = N_a + N_b
-
-print("SCF...")
-Fock_a = 0
-Fock_b = 0
-P = 0
-J_matrix = 0
-K_a = 0
-K_b = 0
-orb_energy_a = 0
-orb_energy_b = 0
-P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
-E_total = -1000
-count = 0
-while True:
-    P = P_a + P_b
-    J_matrix = xp.sum(P[None, None, :, :] * ERI, axis=(-1, -2))
-    K_a = xp.sum(P_a[None, :, None, :] * ERI, axis=(1, 3))
-    K_b = xp.sum(P_b[None, :, None, :] * ERI, axis=(1, 3))
-    Fock_a = H_matrix + J_matrix - K_a
-    Fock_b = H_matrix + J_matrix - K_b
-
-    E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
-    E_total_new = E_elec + E_NN
-    delta_E = xp.abs(E_total_new - E_total)
-    Fock_a_prime = X_t @ Fock_a @ X
-    Fock_b_prime = X_t @ Fock_b @ X
-    orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
-    orb_energy_b, C_b_prime = xp.linalg.eigh(Fock_b_prime)
-
-    C_a_new = X @ C_a_prime
-    C_b_new = X @ C_b_prime
-    P_a_new, P_b_new = UHF_density(C_a_new, C_b_new, N_a, N_b)
-    delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
-
-    if (delta_E < 1e-8 and delta_P < 1e-6) or (count > 100):
-        P = P_a + P_b
-        J_matrix = xp.sum(P[None, None, :, :] * ERI, axis=(-1, -2))
-        K_a = xp.sum(P_a[None, :, None, :] * ERI, axis=(1, 3))
-        K_b = xp.sum(P_b[None, :, None, :] * ERI, axis=(1, 3))
-        Fock_a = H_matrix + J_matrix - K_a
-        Fock_b = H_matrix + J_matrix - K_b
-
-        E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
-        E_total_new = E_elec + E_NN
-        delta_E = xp.abs(E_total_new - E_total)
-        Fock_a_prime = X_t @ Fock_a @ X
-        Fock_b_prime = X_t @ Fock_b @ X
-        orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
-        orb_energy_b, C_b_prime = xp.linalg.eigh(Fock_b_prime)
-        C_a = C_a_new
-        C_b = C_b_new
-        break
-
-    E_total = E_total_new
-    P_a = P_a_new
-    P_b = P_b_new
-    count += 1
-
-print("Initializing Grid...")
-padding = 3
-grid_spacing = 0.05
-minx = float(xp.min(centers[:, 0]) - padding)
-maxx = float(xp.max(centers[:, 0]) + padding)
-miny = float(xp.min(centers[:, 1]) - padding)
-maxy = float(xp.max(centers[:, 1]) + padding)
-minz = float(xp.min(centers[:, 2]) - padding)
-maxz = float(xp.max(centers[:, 2]) + padding)
-
-x_space = math.ceil((maxx - minx) / grid_spacing) + 1
-y_space = math.ceil((maxy - miny) / grid_spacing) + 1
-z_space = math.ceil((maxz - minz) / grid_spacing) + 1
-print("X_space: ", x_space)
-print("Y_space: ", y_space)
-print("Z_space: ", z_space)
-gridx = xp.linspace(minx, maxx, x_space)
-gridy = xp.linspace(miny, maxy, y_space)
-gridz = xp.linspace(minz, maxz, z_space)
-X_shape = xp.size(gridx)
-Y_shape = xp.size(gridy)
-Z_shape = xp.size(gridz)
-gridx = xp.broadcast_to(gridx[:, None, None], (X_shape, Y_shape, Z_shape))
-gridy = xp.broadcast_to(gridy[None, :, None], (X_shape, Y_shape, Z_shape))
-gridz = xp.broadcast_to(gridz[None, None, :], (X_shape, Y_shape, Z_shape))
-grid = xp.stack((gridx, gridy, gridz), axis=-1, dtype=xp.float32)
-grid_shape = grid.shape[:-1]
-grid = grid.reshape(-1, 3)
-grid_len = int(grid.shape[0])
-
-print("Clearing VRAM...")
-keep = ["grid", "grid_len", "coeffs", "normals_1d", "cen", "pow", "exp", "P_a", "P_b", "C_a", "xp", "np", "contract_1d",
-        "contracted_position", "max_contr"]
-for name in list(globals().keys()):
-    if not name.startswith('_') and name not in keep and name != 'cp' and name != 'gc':
-        del globals()[name]
-gc.collect()
-cp.get_default_memory_pool().free_all_blocks()
-
-print("Evaluating Grid...")
-chunk_size = int(5e5)
-write = 0
-coeffs = coeffs.astype(xp.float32)
-normals_1d = normals_1d.astype(xp.float32)
-cen = cen.astype(xp.float32)
-pow = pow.astype(xp.float32)
-C_a = C_a.astype(xp.float32)
-
-xp.save("preprocess/grid.npy", grid)
-total_file = np.lib.format.open_memmap(
-    "preprocess/total_density.npy",
-    mode="w+",
-    dtype=np.float32,
-    shape=(grid_len,)
-)
-
-spin_file = np.lib.format.open_memmap(
-    "preprocess/spin_density.npy",
-    mode="w+",
-    dtype=np.float32,
-    shape=(grid_len,)
-)
-
-number_of_orbitals = C_a.shape[1]
-print("Number of Orbitals: ", number_of_orbitals)
-
-orbital_file = np.lib.format.open_memmap(
-    "preprocess/orbital_density.npy",
-    mode="w+",
-    dtype=np.float32,
-    shape=(number_of_orbitals, grid_len)
-)
-C_a = C_a.T
-while write != grid_len:
-    write_to = min(write + chunk_size, grid_len)
-    uncontracted_chunk = (coeffs[:, None]
-                          * normals_1d[:, None]
-                          * xp.power(grid[write:write_to, 0][None, :] - cen[:, 0][:, None], pow[:, 0][:, None])
-                          * xp.power(grid[write:write_to, 1][None, :] - cen[:, 1][:, None], pow[:, 1][:, None])
-                          * xp.power(grid[write:write_to, 2][None, :] - cen[:, 2][:, None], pow[:, 2][:, None])
-                          * xp.exp(
-                -exp[:, None] * xp.sum(xp.square(grid[None, write:write_to, :] - cen[:, None, :]), axis=-1))
-                          )
-    chunk = contract_1d(uncontracted_chunk, contracted_position, max_contr)
-    alpha_chunk = xp.sum(P_a[:, :, None] * chunk[:, None, :] * chunk[None, :, :], axis=(0, 1))
-    beta_chunk = xp.sum(P_b[:, :, None] * chunk[:, None, :] * chunk[None, :, :], axis=(0, 1))
-    psi_chunk = C_a @ chunk
-    orbital_chunk = xp.square(psi_chunk)
-    total_chunk = alpha_chunk + beta_chunk
-    spin_chunk = alpha_chunk - beta_chunk
-    total_file[write:write_to] = xp.asnumpy(total_chunk)
-    spin_file[write:write_to] = xp.asnumpy(spin_chunk)
-    orbital_file[:, write:write_to] = xp.asnumpy(orbital_chunk)
-    write = write_to
-
-'''
-grid /= 5
-density_max = xp.max(total_density)
-tau = 1e-6
-density_min = tau * density_max
-density_mask = (total_density > density_min)
-total_density = total_density[density_mask]
-q = xp.log10(total_density)
-q_min = xp.log10(density_min)
-q_max = xp.log10(density_max)
-density_norm = xp.clip((q - q_min) / (q_max - q_min), 0, 1)
-#density_norm = xp.asnumpy(density_norm)
-
-#density_rgba = colormaps["Blues"](density_norm)
-#density_rgb = density_rgba[:, :3]
-density_rgb = xp.round(density_norm * 255)
-density_rgb = xp.repeat(density_rgb[:, None], 3, axis=1)
-density_rgb = density_rgb.astype(xp.uint8)
-density_data = xp.column_stack((grid[density_mask], density_rgb))
-
-spin_max = xp.max(xp.abs(spin_density))
-spin_tau = 1e-4
-spin_min = spin_tau * spin_max
-spin_mask = (xp.abs(spin_density) > spin_min)
-spin_density = spin_density[spin_mask]
-spin_norm = 0.5*(spin_density/spin_max + 1)
-#spin_norm = xp.asnumpy(spin_norm)
-#spin_cmap = colors.LinearSegmentedColormap.from_list("spin_density",["blue", "white", "red"])
-#spin_rgb = spin_cmap(spin_norm)
-#spin_rgb = spin_rgb[:, :3]
-spin_rgb = xp.round(spin_norm * 255)
-spin_rgb = xp.repeat(spin_rgb[:, None], 3, axis=1)
-spin_rgb = spin_rgb.astype(np.uint8)
-spin_data = np.column_stack((grid[spin_mask], spin_rgb))
-
-np.savetxt("data/density_data.xyz", density_data, fmt=["%.7f", "%.7f", "%.7f", "%d", "%d", "%d"], delimiter=" ")
-np.savetxt("data/spin_data.xyz", spin_data, fmt=["%.7f", "%.7f", "%.7f", "%d", "%d", "%d"], delimiter=" ")
-'''
-'''
-#Complete checks:
-print("\n")
-print("Diagonalized Overlap: ", xp.isclose(xp.diag(overlaps), 1).all())
-print("Overlap Symmetry: ", sym(overlaps))
-print("T Matrix Symmetry: ", sym(T_matrix))
-print("T Matrix Positive Semidefinite: ", (xp.linalg.eigh(T_matrix)[0] > -1e-10).all())
-print("V Matrix Symmetry: ", sym(V_matrix))
-print("V Matrix Negative Semidefinite: ", (xp.linalg.eigh(V_matrix)[0] < 1e-10).all())
-print("H Matrix Symmetry: ", sym(H_matrix))
-print("Nuclear Repulsion Nonnegative: ", E_NN >= 0)
-print("ERI Symmetry 1: ", xp.isclose(ERI, xp.transpose(ERI, axes=(1, 0, 2, 3))).all())
-print("ERI Symmetry 2: ", xp.isclose(ERI, xp.transpose(ERI, axes=(0, 1, 3, 2))).all())
-print("ERI Symmetry 3: ", xp.isclose(ERI, xp.transpose(ERI, axes=(2, 3, 0, 1))).all())
-eri_size = ERI.shape[0]
-idx = xp.arange(eri_size)
-mu = xp.broadcast_to(idx[:, None], (eri_size, eri_size))
-nu = xp.broadcast_to(idx[None, :], (eri_size, eri_size))
-self_coulomb = ERI[mu, nu, mu, nu]
-print("Self Coulomb Nonnegative :", (self_coulomb >= 0).all())
-print("Schwartz Inequality: ", (xp.square(ERI) <= self_coulomb[:, :, None, None]*self_coulomb[None, None, :, :]).all())
-print("s Positive: ", (xp.diagonal(s) > 0).all())
-print("Orthogonalizer Symmetry 1: ", xp.isclose(X_t@overlaps@X, xp.identity(overlaps.shape[0])).all())
-print("Orthogonalizer Symmetry 2: ", sym(X))
-print("F_prime: ", sym(F_prime))
-print("C: ", xp.isclose(C.T@overlaps@C, xp.identity(overlaps.shape[0])).all())
-print("C_prime Orthogonal: ", xp.isclose(C_prime @ C_prime.T, xp.identity(C_prime.shape[0])).all())
-print("Eigenvalue Equation: ", xp.isclose(F @ C, overlaps @ C @ xp.diag(orb_energy)).all())
-print("Electron Count: ", N_e == elec_count)
-print("Spin Population 1: ", N_e == N_a + N_b)
-print("Spin Population 2: ", mult - 1 == N_a - N_b)
-print("N_a: ", N_a >= 0)
-print("N_b: ", N_b >= 0)
-print("Trace Electron Count A: ", xp.isclose(xp.trace(P_a @ overlaps), N_a))
-print("Trace Electron Count B: ", xp.isclose(xp.trace(P_b @ overlaps), N_b))
-print("Trace Electron Count Total: ", xp.isclose(xp.trace((P_a + P_b) @ overlaps), N_e))
-print("UHF Density Matrix A Symmetry: ", sym(P_a))
-print("UHF Density Matrix B Symmetry: ", sym(P_b))
-print("UHF Density Matrix A Idempotent: ", xp.isclose(P_a@overlaps@P_a, P_a).all())
-print("UHF Density Matrix B Idempotent: ", xp.isclose(P_b@overlaps@P_b, P_b).all())
-print("UHF Density Matrix A Rank: ", xp.linalg.matrix_rank(P_a) == N_a)
-print("UHF Density Matrix B Rank: ", xp.linalg.matrix_rank(P_b) == N_b)
-print("Coulomb Matrix Symmetry: ", sym(J_matrix))
-print("Exchange Matrix A Symmetry: ", sym(K_a))
-print("Exchange Matrix B Symmetry: ", sym(K_b))
-print("Fock Matrix A Symmetry: ", sym(Fock_a))
-print("Fock Matrix B Symmetry: ", sym(Fock_b))
-print("C_a Overlap Normal: ", xp.isclose(C_a.T @ overlaps @ C_a, xp.identity(C_a.shape[0])).all())
-print("C_b Overlap Normal: ", xp.isclose(C_b.T @ overlaps @ C_b, xp.identity(C_b.shape[0])).all())
-print("Eigenvalue Fock A: ", xp.isclose(Fock_a @ C_a, overlaps @ C_a @ xp.diag(orb_energy_a)).all())
-print("Eigenvalue Fock B: ", xp.isclose(Fock_b @ C_b, overlaps @ C_b @ xp.diag(orb_energy_b)).all())
-print("UHF Density Matrix A Overlap Rank: ", xp.linalg.matrix_rank(P_a @ overlaps) == N_a)
-print("UHF Density Matrix B Overlap Rank: ", xp.linalg.matrix_rank(P_b @ overlaps) == N_b)
-print("UHF Density Matrix A Residual: ", xp.isclose(Fock_a @ P_a @ overlaps, overlaps @ P_a @ Fock_a).all())
-print("UHF Density Matrix B Residual: ", xp.isclose(Fock_b @ P_b @ overlaps, overlaps @ P_b @ Fock_b).all())
-print("Numerical Integral A: ", xp.isclose(N_a, xp.sum(alpha_density)*grid_spacing**3, rtol=1e-2, atol=1e-2))
-print("Numerical Integral B: ", xp.isclose(N_b, xp.sum(beta_density)*grid_spacing**3, rtol=1e-2, atol=1e-2))
-print("Alpha Density Nonnegative: ", (alpha_density >= 0).all())
-print("Beta Density Nonnegative: ", (beta_density >= 0).all())
-'''

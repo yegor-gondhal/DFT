@@ -59,28 +59,14 @@ for i, atom in enumerate(atoms):
         exponents = instance[1]
         coefficients = instance[2]
 
-
         if len(l) == 1:
-            shell = {
-                "atom_idx": i,
-                "atom_pos": xp.array(centers[i]),
-                "angular_momentum": l[0],
-                "exponents": xp.array(exponents),
-                "coefficients": xp.array(coefficients),
-            }
+            momenta = [l[0]] * len(coefficients)
         elif len(l) == len(coefficients):
-            for momentum, coef_row in zip(l, coefficients):
-                shell = {
-                    "atom_idx": i,
-                    "atom_pos": xp.array(centers[i]),
-                    "angular_momentum": momentum,
-                    "exponents": xp.array(exponents),
-                    "coefficients": xp.array(coef_row),
-                }
+            momenta = l
         else:
             raise ValueError("Something went wrong")
 
-            '''
+        for l, coefficient in zip(momenta, coefficients):
             if l == 0:
                 exp.append(exponents)
                 coeffs.append(coefficient)
@@ -104,17 +90,6 @@ for i, atom in enumerate(atoms):
                     coeffs.append(coefficient)
                     cen.append(centers[i])
                     pow.append(f)
-            '''
-
-current_ao = 0
-for shell in shells:
-    shell["components"] = combinations(shell["angular_momentum"])
-    shell["n_components"] = len(shell["components"])
-    shell["n_contractions"] = shell["coefficients"].shape[0]
-    shell["n_ao"] = shell["n_components"] * shell["n_contractions"]
-    shell["ao_start"] = current_ao
-    shell["ao_stop"] = current_ao + shell["n_ao"]
-    current_ao = shell["ao_stop"]
 
 
 cen1 = []
@@ -184,6 +159,8 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     idxs_a = xp.arange(max1+1)
     idxs_a = xp.broadcast_to(idxs_a[None, None, :], (p.shape[0], p.shape[1], idxs_a.shape[0]))
     mask_a = (idxs_a <= p1[:, None, None])
+    print(idxs_a.shape)
+    print(p1.shape, "\n")
     idx1, idx2, idx3 = xp.where(mask_a)
     u_plus_a = xp.zeros(mask_a.shape)
     u_plus_a[idx1, idx2, idx3] = mspecial.binom(p1[idx1], idxs_a[idx1, idx2, idx3]) * xp.power(a[idx1, idx2], p1[idx1] - idxs_a[idx1, idx2, idx3])
