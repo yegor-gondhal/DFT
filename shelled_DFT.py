@@ -83,33 +83,6 @@ for i, atom in enumerate(atoms):
         else:
             raise ValueError("Something went wrong")
 
-            '''
-            if l == 0:
-                exp.append(exponents)
-                coeffs.append(coefficient)
-                cen.append(centers[i])
-                pow.append(s_orb)
-            elif l == 1:
-                for p in p_orb:
-                    exp.append(exponents)
-                    coeffs.append(coefficient)
-                    cen.append(centers[i])
-                    pow.append(p)
-            elif l == 2:
-                for d in d_orb:
-                    exp.append(exponents)
-                    coeffs.append(coefficient)
-                    cen.append(centers[i])
-                    pow.append(d)
-            elif l == 3:
-                for f in f_orb:
-                    exp.append(exponents)
-                    coeffs.append(coefficient)
-                    cen.append(centers[i])
-                    pow.append(f)
-            '''
-
-
 centers = xp.array(centers)
 Z = xp.empty(len(atoms), xp.int32)
 for i in range(len(atoms)):
@@ -145,8 +118,6 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     max1 = int(xp.max(p1))
     idxs_a = xp.arange(max1 + 1)
     idxs_a = xp.broadcast_to(idxs_a[None, None, :], (p.shape[0], p.shape[1], idxs_a.shape[0]))
-    print(idxs_a.shape)
-    print(p1.shape, "\n")
     mask_a = (idxs_a <= p1[:, None, None])
     idx1, idx2, idx3 = xp.where(mask_a)
     u_plus_a = xp.zeros(mask_a.shape)
@@ -183,13 +154,12 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     return int_matrix * outer_coeff
 
 
-def T_raw(exp, cen, pow, prev_overlap):
-    result = -2 * exp[None, :] * (2 * pow[None, :] + 1) * prev_overlap
-    result += 4 * xp.square(exp[None, :]) * overlap(exp, exp, cen, cen, pow, pow + 2)
-    if xp.any(pow >= 2):
-        idxs = xp.where(pow >= 2)[0]
-        result[:, idxs] += pow[idxs][None, :] * (pow[idxs][None, :] - 1) * overlap(exp, exp[idxs], cen, cen[idxs], pow,
-                                                                                   pow[idxs] - 2)
+def T_raw(exp_a, exp_b, cen_a, cen_b, pow_a, pow_b, prev_overlap):
+    result = -2 * exp_b[None, :] * (2 * pow_b[None, :] + 1) * prev_overlap
+    result += 4 * xp.square(exp_b[None, :]) * overlap(exp_a, exp_b, cen_a, cen_b, pow_a, pow_b + 2)
+    if xp.any(pow_b >= 2):
+        idxs = xp.where(pow_b >= 2)[0]
+        result[:, idxs] += pow_b[idxs][None, :] * (pow_b[idxs][None, :] - 1) * overlap(exp_a, exp_b[idxs], cen_a, cen_b, pow_a, pow_b[idxs] - 2)
     return result
 
 
@@ -828,22 +798,67 @@ def contract_1d(matrix, contracted_position, max_contr):
     xp.add.at(temp, contracted_position, matrix)
     return temp
 
+print("Defining Shell...")
 total_ao = 0
 for shell in shells:
     shell["components"] = xp.array(combinations(shell["angular_momentum"]))
     shell["n_components"] = len(shell["components"])
     shell["n_contractions"] = shell["coefficients"].shape[0]
     shell["n_ao"] = shell["n_components"] * shell["n_contractions"]
+    shell["n_exponents"] = xp.size(shell["exponents"])
     shell["ao_start"] = total_ao
     shell["ao_stop"] = total_ao + shell["n_ao"]
-    shell["normalization"] = normal(shell["exponents"][:, None], shell["components"])
-    current_ao = shell["ao_stop"]
+    exp = xp.tile(shell["exponents"], shell["n_components"])
+    pow = xp.repeat(shell["components"], shell["n_exponents"], axis=0).reshape(-1, 3)
+    shell["normalization"] = normal(exp, pow)
+    total_ao = shell["ao_stop"]
 
 overlaps = xp.empty((total_ao, total_ao))
-
+T_matrix = xp.empty((total_ao, total_ao))
+print("Overlaps/T_matrix...")
 for i, shell_a in enumerate(shells):
     for j in range(i+1):
-        print(j)
         shell_b = shells[j]
-        overlapx = overlap(shell_a["exponents"], shell_b["exponents"], shell_a["atom_pos"][0], shell_b["atom_pos"][0], shell_a["components"][:, 0], shell_b["components"][:, 0])
+        exp_a = xp.tile(shell_a["exponents"], shell_a["n_components"])
+        exp_b = xp.tile(shell_b["exponents"], shell_b["n_components"])
+        pow_a = xp.repeat(shell_a["components"], shell_a["n_exponents"], axis=0).reshape(-1, 3)
+        pow_b = xp.repeat(shell_b["components"], shell_b["n_exponents"], axis=0).reshape(-1, 3)
+
+        overlap_shell = xp.empty((3, xp.size(exp_a), xp.size(exp_b)))
+        T_prim = xp.empty((3, xp.size(exp_a), xp.size(exp_b)))
+        for dim in range(3):
+            overlap_shell[dim] = overlap(exp_a, exp_b, shell_a["atom_pos"][dim], shell_b["atom_pos"][dim], pow_a[:, dim], pow_b[:, dim])
+            T_prim[dim] = T_raw(exp_a, exp_b, shell_a["atom_pos"][dim], shell_b["atom_pos"][dim], pow_a[:, dim], pow_b[:, dim], overlap_shell[dim])
+
+        overlap_prim = xp.prod(overlap_shell, axis=0)
+        overlap_prim = overlap_prim * (shell_a["normalization"][:, None] * shell_b["normalization"][None, :])
+        overlap_prim = overlap_prim.reshape(shell_a["n_components"], shell_a["n_exponents"], shell_b["n_components"], shell_b["n_exponents"])
+        overlap_block = xp.einsum(
+            "apbq,kp,lq->kalb",
+            overlap_prim,
+            shell_a["coefficients"],
+            shell_b["coefficients"]
+        ).reshape(shell_a["n_ao"], shell_b["n_ao"])
+
+        idx1 = xp.array([0, 1, 2])
+        idx2 = xp.array([2, 0, 1])
+        idx3 = xp.array([1, 2, 0])
+        T_block = xp.sum(T_prim[idx1] * overlap_shell[idx2] * overlap_shell[idx3], axis=0)
+        T_block = T_block * (shell_a["normalization"][:, None] * shell_b["normalization"][None, :])
+        T_block = T_block.reshape(shell_a["n_components"], shell_a["n_exponents"], shell_b["n_components"], shell_b["n_exponents"])
+        T_block = xp.einsum(
+            "apbq,kp,lq->kalb",
+            T_block,
+            shell_a["coefficients"],
+            shell_b["coefficients"]
+        ).reshape(shell_a["n_ao"], shell_b["n_ao"])
+        T_block /= -2
+
+        slicea = slice(shell_a["ao_start"], shell_a["ao_stop"])
+        sliceb = slice(shell_b["ao_start"], shell_b["ao_stop"])
+        overlaps[slicea, sliceb] = overlap_block
+        T_matrix[slicea, sliceb] = T_block
+        if i != j:
+            overlaps[sliceb, slicea] = overlap_block.T
+            T_matrix[sliceb, slicea] = T_block.T
 

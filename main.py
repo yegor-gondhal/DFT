@@ -160,7 +160,7 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     idxs_a = xp.broadcast_to(idxs_a[None, None, :], (p.shape[0], p.shape[1], idxs_a.shape[0]))
     mask_a = (idxs_a <= p1[:, None, None])
     print(idxs_a.shape)
-    print(p1.shape, "\n")
+    print(p1.shape)
     idx1, idx2, idx3 = xp.where(mask_a)
     u_plus_a = xp.zeros(mask_a.shape)
     u_plus_a[idx1, idx2, idx3] = mspecial.binom(p1[idx1], idxs_a[idx1, idx2, idx3]) * xp.power(a[idx1, idx2], p1[idx1] - idxs_a[idx1, idx2, idx3])
@@ -189,6 +189,7 @@ def overlap(alpha, beta, cen_a, cen_b, p1, p2):
     int_matrix[idxs] *= xp.power(p[idxs[:2]], -0.5 * (u_matrix[idxs] + 1))
     int_matrix *= inner_coeff
     int_matrix = xp.sum(int_matrix, axis=(-1, -2))
+    print(int_matrix.shape, "\n")
     return int_matrix*outer_coeff
 
 def T_raw(exp, cen, pow, prev_overlap):
