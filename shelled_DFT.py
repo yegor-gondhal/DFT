@@ -64,7 +64,7 @@ for i, atom in enumerate(atoms):
         if len(l) == 1:
             shell = {
                 "atom_idx": i,
-                "atom_pos": xp.array(centers[i]),
+                "atom_pos": xp.array(centers[i], dtype=xp.float64),
                 "angular_momentum": l[0],
                 "exponents": xp.array(exponents),
                 "coefficients": xp.array(coefficients),
@@ -74,7 +74,7 @@ for i, atom in enumerate(atoms):
             for momentum, coef_row in zip(l, coefficients):
                 shell = {
                     "atom_idx": i,
-                    "atom_pos": xp.array(centers[i]),
+                    "atom_pos": xp.array(centers[i], dtype=xp.float64),
                     "angular_momentum": momentum,
                     "exponents": xp.array(exponents),
                     "coefficients": xp.array([coef_row]),
@@ -817,7 +817,7 @@ cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize,32768)
 print("Defining Shell...")
 total_ao = 0
 for shell in shells:
-    shell["components"] = xp.array(combinations(shell["angular_momentum"]))
+    shell["components"] = xp.array(combinations(shell["angular_momentum"]), dtype=xp.int32)
     shell["n_components"] = len(shell["components"])
     shell["n_contractions"] = shell["coefficients"].shape[0]
     shell["n_ao"] = shell["n_components"] * shell["n_contractions"]
@@ -831,6 +831,7 @@ for shell in shells:
 
 overlaps = xp.empty((total_ao, total_ao))
 T_matrix = xp.empty((total_ao, total_ao))
+V_matrix = xp.empty((total_ao, total_ao))
 print("Overlaps/T_matrix...")
 for i, shell_a in enumerate(shells):
     for j in range(i+1):
@@ -870,15 +871,9 @@ for i, shell_a in enumerate(shells):
         ).reshape(shell_a["n_ao"], shell_b["n_ao"])
         T_block /= -2
 
-        slicea = slice(shell_a["ao_start"], shell_a["ao_stop"])
-        sliceb = slice(shell_b["ao_start"], shell_b["ao_stop"])
-        overlaps[slicea, sliceb] = overlap_block
-        T_matrix[slicea, sliceb] = T_block
-        if i != j:
-            overlaps[sliceb, slicea] = overlap_block.T
-            T_matrix[sliceb, slicea] = T_block.T
-
-        K = shell_a["n_exponents"] * shell_b["n_exponents"]
+        num_funcs_a = int(exp_a.size)
+        num_funcs_b = int(exp_b.size)
+        K = num_funcs_a * num_funcs_b
         max_e = 7
         Ex = xp.empty((K * max_e))
         Ey = xp.empty((K * max_e))
@@ -901,8 +896,8 @@ for i, shell_a in enumerate(shells):
             Z,
             centers,
             xp.int32(xp.size(Z)),
-            shell_a["n_exponents"],
-            shell_b["n_exponents"],
+            num_funcs_a,
+            num_funcs_b,
             uncontracted_V_matrix,
             Ex,
             Ey,
@@ -913,31 +908,24 @@ for i, shell_a in enumerate(shells):
             ny,
             nz
         ))
+        uncontracted_V_matrix = uncontracted_V_matrix.reshape(num_funcs_a, num_funcs_b)
+        V_block = uncontracted_V_matrix * (shell_a["normalization"][:, None] * shell_b["normalization"][None, :])
+        V_block = V_block.reshape(shell_a["n_components"], shell_a["n_exponents"], shell_b["n_components"], shell_b["n_exponents"])
+        V_block = xp.einsum(
+            "apbq,kp,lq->kalb",
+            V_block,
+            shell_a["coefficients"],
+            shell_b["coefficients"]
+        ).reshape(shell_a["n_ao"], shell_b["n_ao"])
 
-        uncontracted_V_matrix = uncontracted_V_matrix.reshape(shell_a["n_exponents"], shell_b["n_exponents"])
 
+        slicea = slice(shell_a["ao_start"], shell_a["ao_stop"])
+        sliceb = slice(shell_b["ao_start"], shell_b["ao_stop"])
+        overlaps[slicea, sliceb] = overlap_block
+        T_matrix[slicea, sliceb] = T_block
+        V_matrix[slicea, sliceb] = V_block
+        if i != j:
+            overlaps[sliceb, slicea] = overlap_block.T
+            T_matrix[sliceb, slicea] = T_block.T
+            V_matrix[sliceb, slicea] = V_block.T
 
-'''
-extern "C" __global__ void nuclear_kernel(
-    const double* exp_a, 
-    const double* exp_b, 
-    const double* cen_a, 
-    const double* cen_b, 
-    const int* pow_a, 
-    const int* pow_b,
-    const int* atoms, 
-    const double* atom_centers,
-    const int num_atoms, 
-    const int num_funcs_a, 
-    const int num_funcs_b,
-    double* V_output,
-    double* Ex_output,
-    double* Ey_output,
-    double* Ez_output,
-    double* p_output,
-    double* P_output,
-    int* nx_output,
-    int* ny_output,
-    int* nz_output
-    )
-'''

@@ -903,7 +903,8 @@ nuclear_kernel((blocks,), (threads,), (
 ))
 cp.cuda.runtime.deviceSynchronize()
 uncontracted_V_matrix = uncontracted_V_matrix.reshape((N, N))
-V_matrix = contract_2d(uncontracted_V_matrix, contracted_position, max_contr)
+V_matrix = normals*mult_coeffs*uncontracted_V_matrix
+V_matrix = contract_2d(V_matrix, contracted_position, max_contr)
 
 eri_values = xp.empty((K, K), dtype=xp.float64)
 chunk_size = 256
