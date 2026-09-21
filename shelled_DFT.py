@@ -545,13 +545,17 @@ __device__ void calc_R(int x_len, int y_len, int z_len, int n_len, double dx, do
 }}
 
 extern "C" __global__ void nuclear_kernel(
-    const double* exp, 
-    const double* cen, 
-    const int* pow, 
+    const double* exp_a, 
+    const double* exp_b, 
+    const double* cen_a, 
+    const double* cen_b, 
+    const int* pow_a, 
+    const int* pow_b,
     const int* atoms, 
     const double* atom_centers,
     const int num_atoms, 
-    const int num_funcs, 
+    const int num_funcs_a, 
+    const int num_funcs_b,
     double* V_output,
     double* Ex_output,
     double* Ey_output,
@@ -565,33 +569,33 @@ extern "C" __global__ void nuclear_kernel(
 
     long long q = (long long)blockIdx.x * blockDim.x + threadIdx.x;
 
-    long long num_pairs = (long long)num_funcs * (long long)num_funcs;
+    long long num_pairs = (long long)num_funcs_a * (long long)num_funcs_b;
 
     if (q >= num_pairs) {{
         return;
     }}
 
-    int a = q / num_funcs;
-    int b = q % num_funcs;
+    int a = q / num_funcs_b;
+    int b = q % num_funcs_b;
 
     double Ex[max_e];
     double Ey[max_e];
     double Ez[max_e];
 
-    double e1 = exp[a];
-    double e2 = exp[b];
-    double c1x = cen[3*a];
-    double c2x = cen[3*b];
-    double c1y = cen[3*a+1];
-    double c2y = cen[3*b+1];
-    double c1z = cen[3*a+2];
-    double c2z = cen[3*b+2];
-    int p1x = pow[3*a];
-    int p2x = pow[3*b];
-    int p1y = pow[3*a+1];
-    int p2y = pow[3*b+1];
-    int p1z = pow[3*a+2];
-    int p2z = pow[3*b+2];
+    double e1 = exp_a[a];
+    double e2 = exp_b[b];
+    double c1x = cen_a[0];
+    double c2x = cen_b[0];
+    double c1y = cen_a[1];
+    double c2y = cen_b[1];
+    double c1z = cen_a[2];
+    double c2z = cen_b[2];
+    int p1x = pow_a[3*a];
+    int p2x = pow_b[3*b];
+    int p1y = pow_a[3*a+1];
+    int p2y = pow_b[3*b+1];
+    int p1z = pow_a[3*a+2];
+    int p2z = pow_b[3*b+2];
 
     calc_E(e1, e2, c1x, c2x, p1x, p2x, Ex);
     calc_E(e1, e2, c1y, c2y, p1y, p2y, Ey);
@@ -798,6 +802,18 @@ def contract_1d(matrix, contracted_position, max_contr):
     xp.add.at(temp, contracted_position, matrix)
     return temp
 
+print("Setting Kernel...")
+module = cp.RawModule(
+    code=source,
+    name_expressions=(
+        "nuclear_kernel",
+        "eri_kernel",
+    ),
+)
+nuclear_kernel = module.get_function("nuclear_kernel")
+eri_kernel = module.get_function("eri_kernel")
+cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize,32768)
+
 print("Defining Shell...")
 total_ao = 0
 for shell in shells:
@@ -862,3 +878,66 @@ for i, shell_a in enumerate(shells):
             overlaps[sliceb, slicea] = overlap_block.T
             T_matrix[sliceb, slicea] = T_block.T
 
+        K = shell_a["n_exponents"] * shell_b["n_exponents"]
+        max_e = 7
+        Ex = xp.empty((K * max_e))
+        Ey = xp.empty((K * max_e))
+        Ez = xp.empty((K * max_e))
+        nx = xp.empty(K, xp.int32)
+        ny = xp.empty(K, xp.int32)
+        nz = xp.empty(K, xp.int32)
+        p_k = xp.empty(K)
+        P_k = xp.empty(K * 3)
+        uncontracted_V_matrix = xp.empty(K)
+        threads = 128
+        blocks = (K + threads - 1) // threads
+        nuclear_kernel((blocks,), (threads,), (
+            exp_a,
+            exp_b,
+            shell_a["atom_pos"],
+            shell_b["atom_pos"],
+            pow_a,
+            pow_b,
+            Z,
+            centers,
+            xp.int32(xp.size(Z)),
+            shell_a["n_exponents"],
+            shell_b["n_exponents"],
+            uncontracted_V_matrix,
+            Ex,
+            Ey,
+            Ez,
+            p_k,
+            P_k,
+            nx,
+            ny,
+            nz
+        ))
+
+        uncontracted_V_matrix = uncontracted_V_matrix.reshape(shell_a["n_exponents"], shell_b["n_exponents"])
+
+
+'''
+extern "C" __global__ void nuclear_kernel(
+    const double* exp_a, 
+    const double* exp_b, 
+    const double* cen_a, 
+    const double* cen_b, 
+    const int* pow_a, 
+    const int* pow_b,
+    const int* atoms, 
+    const double* atom_centers,
+    const int num_atoms, 
+    const int num_funcs_a, 
+    const int num_funcs_b,
+    double* V_output,
+    double* Ex_output,
+    double* Ey_output,
+    double* Ez_output,
+    double* p_output,
+    double* P_output,
+    int* nx_output,
+    int* ny_output,
+    int* nz_output
+    )
+'''
