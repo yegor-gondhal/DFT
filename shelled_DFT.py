@@ -39,7 +39,7 @@ f_orb = xp.array(f_orb)
 atoms = ["30", "30", "30"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 '''
-atoms = ["23"]
+atoms = ["3"]
 centers = [[0, 0, 0]]
 unpaired_elec = [2]
 molecular_charge = 0
@@ -407,7 +407,7 @@ __device__ void boys(int max_m, double T, double* F) {{
     }}
 }}
 
-__device__ void convolution(const double* E, int E_i, int E_j, int len_i, int len_j, double* C) {{
+__device__ void convolution(const double* E_ab, const double* E_cd, int E_i, int E_j, int len_i, int len_j, double* C) {{
 
     int out_len = len_i + len_j - 1;
     for (int s = 0; s < out_len; ++s) {{
@@ -417,7 +417,7 @@ __device__ void convolution(const double* E, int E_i, int E_j, int len_i, int le
     for (int t = 0; t < len_i; ++t) {{
         for (int tau = 0; tau < len_j; ++tau) {{
             double sign = (tau & 1) ? -1.0 : 1.0;
-            C[t+tau] += E[E_i + t]*E[E_j + tau]*sign;
+            C[t+tau] += E_ab[E_i + t]*E_cd[E_j + tau]*sign;
         }}
     }}
 }}
@@ -648,23 +648,30 @@ extern "C" __global__ void nuclear_kernel(
 
 extern "C" __global__
 void eri_kernel(
-    const int row_start,
-    const int K,
-    const long long num_current,
-    const double* p_k,
-    const double* P_k,
-    const double* Ex,
-    const double* Ey,
-    const double* Ez,
-    const int* nx,
-    const int* ny,
-    const int* nz,
-    const int sx,
-    const int sy,
-    const int sz,
+    const int K_ab,
+    const double* p_ab,
+    const double* P_ab,
+    const double* Exab,
+    const double* Eyab,
+    const double* Ezab,
+    const int* nxab,
+    const int* nyab,
+    const int* nzab,
+    const int K_cd,
+    const double* p_cd,
+    const double* P_cd,
+    const double* Excd,
+    const double* Eycd,
+    const double* Ezcd,
+    const int* nxcd,
+    const int* nycd,
+    const int* nzcd,
     double* eri_output
 ) {{
 
+    long long num_current =
+    (long long)K_ab * (long long)K_cd;
+    
     long long q =
     (long long)blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -672,18 +679,18 @@ void eri_kernel(
         return;
     }}
 
-    int i = row_start + (int)(q / K);
-    int j = (int)(q % K);
+    int i = q / K_cd;
+    int j = q % K_cd;
 
-    double p_i = p_k[i];
-    double p_j = p_k[j];
+    double p_i = p_ab[i];
+    double p_j = p_cd[j];
 
-    int nxi = nx[i];
-    int nxj = nx[j];
-    int nyi = ny[i];
-    int nyj = ny[j];
-    int nzi = nz[i];
-    int nzj = nz[j];
+    int nxi = nxab[i];
+    int nxj = nxcd[j];
+    int nyi = nyab[i];
+    int nyj = nycd[j];
+    int nzi = nzab[i];
+    int nzj = nzcd[j];
 
     int x_len = nxi + nxj - 1;
     int y_len = nyi + nyj - 1;
@@ -691,9 +698,9 @@ void eri_kernel(
     int n_len = x_len + y_len + z_len - 2;
 
     double rho = (p_i*p_j)/(p_i+p_j);
-    double r_ij0 = P_k[3*i] - P_k[3*j];
-    double r_ij1 = P_k[3*i+1] - P_k[3*j+1];
-    double r_ij2 = P_k[3*i+2] - P_k[3*j+2];
+    double r_ij0 = P_ab[3*i] - P_cd[3*j];
+    double r_ij1 = P_ab[3*i+1] - P_cd[3*j+1];
+    double r_ij2 = P_ab[3*i+2] - P_cd[3*j+2];
     double R[max_r];
 
     calc_R(x_len, y_len, z_len, n_len, r_ij0, r_ij1, r_ij2, rho, R);
@@ -702,9 +709,9 @@ void eri_kernel(
     double Cy[max_conv];
     double Cz[max_conv];
 
-    convolution(Ex, i*sx, j*sx, nxi, nxj, Cx);
-    convolution(Ey, i*sy, j*sy, nyi, nyj, Cy);
-    convolution(Ez, i*sz, j*sz, nzi, nzj, Cz);
+    convolution(Exab, Excd, i*max_e, j*max_e, nxi, nxj, Cx);
+    convolution(Eyab, Eycd, i*max_e, j*max_e, nyi, nyj, Cy);
+    convolution(Ezab, Ezcd, i*max_e, j*max_e, nzi, nzj, Cz);
 
     double integral = 0.0;
     for (int x = 0; x < x_len; ++x) {{
@@ -832,6 +839,10 @@ for shell in shells:
 overlaps = xp.empty((total_ao, total_ao))
 T_matrix = xp.empty((total_ao, total_ao))
 V_matrix = xp.empty((total_ao, total_ao))
+
+pair_cache = {}
+pair_list = []
+
 print("Overlaps/T_matrix...")
 for i, shell_a in enumerate(shells):
     for j in range(i+1):
@@ -918,6 +929,19 @@ for i, shell_a in enumerate(shells):
             shell_b["coefficients"]
         ).reshape(shell_a["n_ao"], shell_b["n_ao"])
 
+        key = (i, j)
+        pair_cache[key] = {
+            "K": K,
+            "p": p_k,
+            "P": P_k,
+            "Ex": Ex,
+            "Ey": Ey,
+            "Ez": Ez,
+            "nx": nx,
+            "ny": ny,
+            "nz": nz,
+        }
+        pair_list.append(key)
 
         slicea = slice(shell_a["ao_start"], shell_a["ao_stop"])
         sliceb = slice(shell_b["ao_start"], shell_b["ao_stop"])
@@ -929,3 +953,118 @@ for i, shell_a in enumerate(shells):
             T_matrix[sliceb, slicea] = T_block.T
             V_matrix[sliceb, slicea] = V_block.T
 
+
+print("Setting Up SCF...")
+E_NN = nuclear_repulsion(Z, centers)
+elec_count = xp.sum(Z) - molecular_charge
+H_matrix = T_matrix + V_matrix
+eig_vals, U = xp.linalg.eigh(overlaps)
+s = xp.power(eig_vals, -0.5)
+s = xp.diag(s)
+U_t = U.T
+X = U @ s @ U_t
+X_t = X.T
+
+F_prime = X_t @ H_matrix @ X
+orb_energy, C_prime = xp.linalg.eigh(F_prime)
+C = X @ C_prime
+C_a, C_b = C, C
+
+total_spin = total_spin(unpaired_elec)
+mult = 2*total_spin + 1
+print(mult)
+N_a = (elec_count + mult - 1)/2
+N_b = (elec_count - mult + 1)/2
+N_e = N_a + N_b
+
+print("SCF...")
+Fock_a = 0
+Fock_b = 0
+P = 0
+J_matrix = 0
+K_a = 0
+K_b = 0
+orb_energy_a = 0
+orb_energy_b = 0
+P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
+E_total = -1000
+count = 0
+threads = 128
+
+while True:
+    P = P_a + P_b
+
+    J_matrix = xp.zeros_like(H_matrix)
+    K_a = xp.zeros_like(H_matrix)
+    K_b = xp.zeros_like(H_matrix)
+
+    for ab_idx, (a, b) in enumerate(pair_list):
+        print("entered")
+        pair_ab = pair_cache[(a, b)]
+
+        for cd_idx in range(ab_idx + 1):
+            c, d = pair_list[cd_idx]
+            pair_cd = pair_cache[(c, d)]
+            eri_output = xp.zeros((pair_ab["K"] * pair_cd["K"]))
+            blocks = (pair_ab["K"] * pair_cd["K"] + threads - 1) // threads
+            eri_kernel((blocks,), (threads,), (
+                pair_ab["K"],
+                pair_ab["p"],
+                pair_ab["P"],
+                pair_ab["Ex"],
+                pair_ab["Ey"],
+                pair_ab["Ez"],
+                pair_ab["nx"],
+                pair_ab["ny"],
+                pair_ab["nz"],
+                pair_cd["K"],
+                pair_cd["p"],
+                pair_cd["P"],
+                pair_cd["Ex"],
+                pair_cd["Ey"],
+                pair_cd["Ez"],
+                pair_cd["nx"],
+                pair_cd["ny"],
+                pair_cd["nz"],
+                eri_output
+            ))
+            size_a = shells[a]["n_exponents"] * shells[a]["n_components"]
+            size_b = shells[b]["n_exponents"] * shells[b]["n_components"]
+            size_c = shells[c]["n_exponents"] * shells[c]["n_components"]
+            size_d = shells[d]["n_exponents"] * shells[d]["n_components"]
+            eri_output = eri_output.reshape(size_a, size_b, size_c, size_d)
+            sa = slice(shells[a]["ao_start"], shells[a]["ao_stop"])
+            sb = slice(shells[b]["ao_start"], shells[b]["ao_stop"])
+            sc = slice(shells[c]["ao_start"], shells[c]["ao_stop"])
+            sd = slice(shells[d]["ao_start"], shells[d]["ao_stop"])
+            s = [sa, sb, sc, sd]
+            orientations = [
+                ((0, 1, 2, 3), eri_output),
+                ((1, 0, 2, 3), eri_output.transpose(1, 0, 2, 3)),
+                ((0, 1, 3, 2), eri_output.transpose(0, 1, 3, 2)),
+                ((1, 0, 3, 2), eri_output.transpose(1, 0, 3, 2)),
+                ((2, 3, 0, 1), eri_output.transpose(2, 3, 0, 1)),
+                ((3, 2, 0, 1), eri_output.transpose(3, 2, 0, 1)),
+                ((2, 3, 1, 0), eri_output.transpose(2, 3, 1, 0)),
+                ((3, 2, 1, 0), eri_output.transpose(3, 2, 1, 0)),
+            ]
+            for quad, eri in orientations:
+                J_matrix[sa, sb] += xp.einsum(
+                    "abcd,cd->ab",
+                    eri,
+                    P[quad[2], quad[3]],
+                )
+
+                K_a[sa, sc] += xp.einsum(
+                    "abcd,bd->ac",
+                    eri,
+                    P_a[quad[1], quad[3]],
+                )
+
+                K_b[sa, sc] += xp.einsum(
+                    "abcd,bd->ac",
+                    eri,
+                    P_b[quad[1], quad[3]],
+                )
+
+    print("\n")

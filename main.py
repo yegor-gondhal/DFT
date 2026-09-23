@@ -953,8 +953,7 @@ U_t = U.T
 X = U @ s @ U_t
 X_t = X.T
 
-F = T_matrix + V_matrix
-F_prime = X_t @ F @ X
+F_prime = X_t @ H_matrix @ X
 orb_energy, C_prime = xp.linalg.eigh(F_prime)
 C = X @ C_prime
 C_a, C_b = C, C
