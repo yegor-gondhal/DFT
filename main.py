@@ -37,9 +37,9 @@ f_orb = xp.array(f_orb)
 atoms = ["30", "30", "30"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 '''
-atoms = ["23"]
+atoms = ["3"] #23
 centers = [[0, 0, 0]]
-unpaired_elec = [2]
+unpaired_elec = [1] #2
 molecular_charge = 0
 
 unpaired_elec = xp.asarray(unpaired_elec)
@@ -199,187 +199,6 @@ def T_raw(exp, cen, pow, prev_overlap):
         idxs = xp.where(pow >= 2)[0]
         result[:, idxs] += pow[idxs][None, :]*(pow[idxs][None, :] - 1)*overlap(exp, exp[idxs], cen, cen[idxs], pow, pow[idxs]-2)
     return result
-
-def boys_large(m, t):
-    term = mspecial.gammainc(m + 0.5, t)*mspecial.gamma(m + 0.5)
-    term /= 2*xp.power(t, m + 0.5) + 1e-40
-    return term
-
-def boys_small(m, t):
-    k = xp.arange(30)
-    term = xp.power(-t[:, None], k[None, :])
-    term /= mspecial.gamma(k[None, :] + 1)
-    term1 = 2*m[:, None] + 2*k[None, :] + 1
-    return xp.sum(term/term1, axis=-1)
-
-def boys(m, t):
-    result = xp.empty_like(t)
-    mask = (t >= 1)
-    result[mask] = boys_large(m[mask], t[mask])
-    result[~mask] = boys_small(m[~mask], t[~mask])
-    return result
-
-def get_idx(arr1, arr2):
-    mask1 = (arr1[:, 0][:, None] == arr2[:, 0][None, :])
-    mask2 = (arr1[:, 1][:, None] == arr2[:, 1][None, :])
-    mask = mask1 & mask2
-    return xp.argwhere(mask)[:, 1]
-
-def calc_E_1d(exp, cen, pow):
-    alpha = xp.broadcast_to(exp[:, None], (exp.shape[0], exp.shape[0]))
-    beta = xp.broadcast_to(exp[None, :], (exp.shape[0], exp.shape[0]))
-    p = alpha + beta
-    q = xp.outer(exp, exp)/p
-    cen_sep = xp.subtract.outer(cen, cen).astype(xp.float64)
-
-    prefactor = xp.square(cen_sep)
-    prefactor *= -q
-    prefactor = xp.exp(prefactor)
-
-    s = pow.shape[0]
-    pow_pairs = xp.stack((xp.broadcast_to(pow[:, None], (s, s)), xp.broadcast_to(pow[None, :], (s, s))), axis=-1)
-    pow_iter_pairs = xp.zeros_like(pow_pairs)
-    t_max = xp.add.outer(pow, pow)
-    max_loop = int(xp.max(t_max))
-
-    added_E_coeffs = []
-    added_E_idxs = []
-
-    base_idxs = xp.argwhere(xp.ones_like(t_max) == 1)
-
-    added_E_coeffs.insert(0, prefactor.ravel()[:, None])
-    added_E_idxs.insert(0, base_idxs)
-
-    for i in range(max_loop):
-        mask = (t_max > i)
-        j_mask = mask & (pow_iter_pairs[:, :, 0] == pow_pairs[:, :, 0])
-        i_mask = ~j_mask & mask
-
-        pow_iter_pairs[i_mask, 0] += 1
-        pow_iter_pairs[j_mask, 1] += 1
-
-        idxs = xp.argwhere(mask)
-        i_idxs = xp.argwhere(i_mask)
-        j_idxs = xp.argwhere(j_mask)
-
-        super_i_idx = get_idx(i_idxs, idxs)
-        super_j_idx = get_idx(j_idxs, idxs)
-
-        N = int(xp.sum(mask))
-        store_E = xp.empty((N, i+2))
-
-        N_i = int(xp.sum(i_mask))
-        N_j = int(xp.sum(j_mask))
-
-        prev_E = added_E_coeffs[-1]
-        prev_idxs = added_E_idxs[-1]
-
-        super_i_prev_idx = get_idx(i_idxs, prev_idxs)
-        super_j_prev_idx = get_idx(j_idxs, prev_idxs)
-
-        for need_t in range(i+2):
-            i_term = xp.zeros(N_i)
-            j_term = xp.zeros(N_j)
-
-            if need_t <= i:
-                i_term += -1*beta[i_mask]*cen_sep[i_mask]*prev_E[super_i_prev_idx, need_t]/p[i_mask]
-                j_term += alpha[j_mask]*cen_sep[j_mask]*prev_E[super_j_prev_idx, need_t]/p[j_mask]
-
-            if need_t > 0:
-                i_term += prev_E[super_i_prev_idx, need_t-1]/(2*p[i_mask])
-                j_term += prev_E[super_j_prev_idx, need_t-1]/(2*p[j_mask])
-
-            if need_t < i:
-                i_term += prev_E[super_i_prev_idx, need_t+1]*(need_t+1)
-                j_term += prev_E[super_j_prev_idx, need_t+1]*(need_t+1)
-
-            store_E[super_i_idx, need_t] = i_term
-            store_E[super_j_idx, need_t] = j_term
-
-        super_idx = get_idx(idxs, prev_idxs)
-
-        added_E_coeffs[-1] = xp.delete(added_E_coeffs[-1], super_idx, axis=0)
-        added_E_idxs[-1] = xp.delete(added_E_idxs[-1], super_idx, axis=0)
-
-        added_E_coeffs.append(store_E)
-        added_E_idxs.append(idxs)
-
-    E_coeffs = [
-        [None for _ in range(s)]
-        for _ in range(s)
-    ]
-
-    for e, idx in zip(added_E_coeffs, added_E_idxs):
-        for e_val, idx_val in zip(e, idx):
-            row = int(idx_val[0])
-            col = int(idx_val[1])
-            E_coeffs[row][col] = e_val
-
-    return E_coeffs
-    #return added_E_coeffs, added_E_idxs, prefactor
-
-def calc_R(exp, cen, pow, centers):
-    p = exp[:, None]+exp[None, :]
-    P = ((exp[:, None]*cen)[:, None, :] + (exp[:, None]*cen)[None, :, :])/p[..., None]
-
-    T = P[:, :, None, :] - centers[None, None, :, :]
-    T = xp.sum(xp.square(T), axis=-1) * p[:, :, None]
-
-    max_hermite = xp.sum(pow, axis=-1)
-    max_hermite = max_hermite[:, None] + max_hermite[None, :]
-
-    x_shape = pow[:, 0][:, None] + pow[:, 0][None, :] + 1
-    y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
-    z_shape = pow[:, 2][:, None] + pow[:, 2][None, :] + 1
-
-    R_matrix = []
-    for i in range(len(exp)):
-        R_row = []
-        for j in range(len(exp)):
-            x_len, y_len, z_len = int(x_shape[i, j]), int(y_shape[i, j]), int(z_shape[i, j])
-            n_len = int(max_hermite[i, j]) + 1
-            M = int(centers.shape[0])
-            R = xp.empty((x_len, y_len, z_len, M, n_len))
-            n_arr = xp.arange(n_len)
-            n_arr = xp.broadcast_to(n_arr[None, :], (T.shape[2], n_len))
-            boys_t = xp.broadcast_to(T[i, j, :, None], (T.shape[2], n_len))
-            R[0, 0, 0, :, :] = xp.power(-2*p[i, j], n_arr)*boys(n_arr, boys_t)
-
-            for x in range(x_len):
-                for y in range(y_len):
-                    for z in range(z_len):
-                        if x == 0 and y == 0 and z == 0:
-                            continue
-                        if (x != 0):
-                            R[x, y, z, :, :-1] = (P[i, j, 0] - centers[:, 0])[:, None]*R[x-1, y, z, :, 1:]
-                            if x > 1:
-                                R[x, y, z, :, :-1] += (x-1)*R[x-2, y, z, :, 1:]
-                        elif (y != 0):
-                            R[x, y, z, :, :-1] = (P[i, j, 1] - centers[:, 1])[:, None] * R[x, y-1, z, :, 1:]
-                            if y > 1:
-                                R[x, y, z, :, :-1] += (y - 1) * R[x, y-2, z, :, 1:]
-                        else:
-                            R[x, y, z, :, :-1] = (P[i, j, 2] - centers[:, 2])[:, None] * R[x, y, z-1, :, 1:]
-                            if z > 1:
-                                R[x, y, z, :, :-1] += (z - 1) * R[x, y, z-2, :, 1:]
-
-            R_row.append(R[..., 0])
-        R_matrix.append(R_row)
-    return R_matrix, p, P
-
-def nuclear(Ex, Ey, Ez, R, p):
-    nuclear = xp.empty((len(Ex), len(Ex), centers.shape[0]))
-
-    for i in range(len(Ex)):
-        for j in range(len(Ex[0])):
-            V = Ex[i][j][:, None, None, None]*Ey[i][j][None, :, None, None]*Ez[i][j][None, None, :, None]*R[i][j]
-            nuclear[i, j, :] = xp.sum(V, axis=(0, 1, 2))
-
-    nuclear *= Z[None, None, :]
-    nuclear = xp.sum(nuclear, axis=-1)
-    nuclear *= -2*xp.pi/p
-
-    return nuclear
 
 def nuclear_repulsion(Z, centers):
     result = 0.0
@@ -747,17 +566,6 @@ void eri_kernel(
 }}
 """
 
-def pack_E(E):
-    N = len(E)
-    rows = [E[a][b] for a in range(N) for b in range(N)]
-    lengths = np.asarray([row.size for row in rows], dtype=np.int32)
-    stride = int(lengths.max())
-    packed = xp.zeros((N*N, stride), dtype=xp.float64)
-    for pair, row in enumerate(rows):
-        packed[pair, :row.size] = row
-    return packed.ravel(), xp.asarray(lengths, dtype=xp.int32), stride
-
-
 def total_spin(unpaired_elec):
     N = int(xp.size(unpaired_elec))
     pairs = xp.stack([unpaired_elec, -unpaired_elec], axis=-1)
@@ -978,6 +786,7 @@ P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
 E_total = -1000
 count = 0
 while True:
+    print(count)
     P = P_a + P_b
     J_matrix = xp.sum(P[None, None, :, :] * ERI, axis=(-1, -2))
     K_a = xp.sum(P_a[None, :, None, :] * ERI, axis=(1, 3))

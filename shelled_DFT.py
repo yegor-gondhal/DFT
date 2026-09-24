@@ -41,7 +41,7 @@ centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 '''
 atoms = ["3"]
 centers = [[0, 0, 0]]
-unpaired_elec = [2]
+unpaired_elec = [1]
 molecular_charge = 0
 
 unpaired_elec = xp.asarray(unpaired_elec)
@@ -161,195 +161,6 @@ def T_raw(exp_a, exp_b, cen_a, cen_b, pow_a, pow_b, prev_overlap):
         idxs = xp.where(pow_b >= 2)[0]
         result[:, idxs] += pow_b[idxs][None, :] * (pow_b[idxs][None, :] - 1) * overlap(exp_a, exp_b[idxs], cen_a, cen_b, pow_a, pow_b[idxs] - 2)
     return result
-
-
-def boys_large(m, t):
-    term = mspecial.gammainc(m + 0.5, t) * mspecial.gamma(m + 0.5)
-    term /= 2 * xp.power(t, m + 0.5) + 1e-40
-    return term
-
-
-def boys_small(m, t):
-    k = xp.arange(30)
-    term = xp.power(-t[:, None], k[None, :])
-    term /= mspecial.gamma(k[None, :] + 1)
-    term1 = 2 * m[:, None] + 2 * k[None, :] + 1
-    return xp.sum(term / term1, axis=-1)
-
-
-def boys(m, t):
-    result = xp.empty_like(t)
-    mask = (t >= 1)
-    result[mask] = boys_large(m[mask], t[mask])
-    result[~mask] = boys_small(m[~mask], t[~mask])
-    return result
-
-
-def get_idx(arr1, arr2):
-    mask1 = (arr1[:, 0][:, None] == arr2[:, 0][None, :])
-    mask2 = (arr1[:, 1][:, None] == arr2[:, 1][None, :])
-    mask = mask1 & mask2
-    return xp.argwhere(mask)[:, 1]
-
-
-def calc_E_1d(exp, cen, pow):
-    alpha = xp.broadcast_to(exp[:, None], (exp.shape[0], exp.shape[0]))
-    beta = xp.broadcast_to(exp[None, :], (exp.shape[0], exp.shape[0]))
-    p = alpha + beta
-    q = xp.outer(exp, exp) / p
-    cen_sep = xp.subtract.outer(cen, cen).astype(xp.float64)
-
-    prefactor = xp.square(cen_sep)
-    prefactor *= -q
-    prefactor = xp.exp(prefactor)
-
-    s = pow.shape[0]
-    pow_pairs = xp.stack((xp.broadcast_to(pow[:, None], (s, s)), xp.broadcast_to(pow[None, :], (s, s))), axis=-1)
-    pow_iter_pairs = xp.zeros_like(pow_pairs)
-    t_max = xp.add.outer(pow, pow)
-    max_loop = int(xp.max(t_max))
-
-    added_E_coeffs = []
-    added_E_idxs = []
-
-    base_idxs = xp.argwhere(xp.ones_like(t_max) == 1)
-
-    added_E_coeffs.insert(0, prefactor.ravel()[:, None])
-    added_E_idxs.insert(0, base_idxs)
-
-    for i in range(max_loop):
-        mask = (t_max > i)
-        j_mask = mask & (pow_iter_pairs[:, :, 0] == pow_pairs[:, :, 0])
-        i_mask = ~j_mask & mask
-
-        pow_iter_pairs[i_mask, 0] += 1
-        pow_iter_pairs[j_mask, 1] += 1
-
-        idxs = xp.argwhere(mask)
-        i_idxs = xp.argwhere(i_mask)
-        j_idxs = xp.argwhere(j_mask)
-
-        super_i_idx = get_idx(i_idxs, idxs)
-        super_j_idx = get_idx(j_idxs, idxs)
-
-        N = int(xp.sum(mask))
-        store_E = xp.empty((N, i + 2))
-
-        N_i = int(xp.sum(i_mask))
-        N_j = int(xp.sum(j_mask))
-
-        prev_E = added_E_coeffs[-1]
-        prev_idxs = added_E_idxs[-1]
-
-        super_i_prev_idx = get_idx(i_idxs, prev_idxs)
-        super_j_prev_idx = get_idx(j_idxs, prev_idxs)
-
-        for need_t in range(i + 2):
-            i_term = xp.zeros(N_i)
-            j_term = xp.zeros(N_j)
-
-            if need_t <= i:
-                i_term += -1 * beta[i_mask] * cen_sep[i_mask] * prev_E[super_i_prev_idx, need_t] / p[i_mask]
-                j_term += alpha[j_mask] * cen_sep[j_mask] * prev_E[super_j_prev_idx, need_t] / p[j_mask]
-
-            if need_t > 0:
-                i_term += prev_E[super_i_prev_idx, need_t - 1] / (2 * p[i_mask])
-                j_term += prev_E[super_j_prev_idx, need_t - 1] / (2 * p[j_mask])
-
-            if need_t < i:
-                i_term += prev_E[super_i_prev_idx, need_t + 1] * (need_t + 1)
-                j_term += prev_E[super_j_prev_idx, need_t + 1] * (need_t + 1)
-
-            store_E[super_i_idx, need_t] = i_term
-            store_E[super_j_idx, need_t] = j_term
-
-        super_idx = get_idx(idxs, prev_idxs)
-
-        added_E_coeffs[-1] = xp.delete(added_E_coeffs[-1], super_idx, axis=0)
-        added_E_idxs[-1] = xp.delete(added_E_idxs[-1], super_idx, axis=0)
-
-        added_E_coeffs.append(store_E)
-        added_E_idxs.append(idxs)
-
-    E_coeffs = [
-        [None for _ in range(s)]
-        for _ in range(s)
-    ]
-
-    for e, idx in zip(added_E_coeffs, added_E_idxs):
-        for e_val, idx_val in zip(e, idx):
-            row = int(idx_val[0])
-            col = int(idx_val[1])
-            E_coeffs[row][col] = e_val
-
-    return E_coeffs
-    # return added_E_coeffs, added_E_idxs, prefactor
-
-
-def calc_R(exp, cen, pow, centers):
-    p = exp[:, None] + exp[None, :]
-    P = ((exp[:, None] * cen)[:, None, :] + (exp[:, None] * cen)[None, :, :]) / p[..., None]
-
-    T = P[:, :, None, :] - centers[None, None, :, :]
-    T = xp.sum(xp.square(T), axis=-1) * p[:, :, None]
-
-    max_hermite = xp.sum(pow, axis=-1)
-    max_hermite = max_hermite[:, None] + max_hermite[None, :]
-
-    x_shape = pow[:, 0][:, None] + pow[:, 0][None, :] + 1
-    y_shape = pow[:, 1][:, None] + pow[:, 1][None, :] + 1
-    z_shape = pow[:, 2][:, None] + pow[:, 2][None, :] + 1
-
-    R_matrix = []
-    for i in range(len(exp)):
-        R_row = []
-        for j in range(len(exp)):
-            x_len, y_len, z_len = int(x_shape[i, j]), int(y_shape[i, j]), int(z_shape[i, j])
-            n_len = int(max_hermite[i, j]) + 1
-            M = int(centers.shape[0])
-            R = xp.empty((x_len, y_len, z_len, M, n_len))
-            n_arr = xp.arange(n_len)
-            n_arr = xp.broadcast_to(n_arr[None, :], (T.shape[2], n_len))
-            boys_t = xp.broadcast_to(T[i, j, :, None], (T.shape[2], n_len))
-            R[0, 0, 0, :, :] = xp.power(-2 * p[i, j], n_arr) * boys(n_arr, boys_t)
-
-            for x in range(x_len):
-                for y in range(y_len):
-                    for z in range(z_len):
-                        if x == 0 and y == 0 and z == 0:
-                            continue
-                        if (x != 0):
-                            R[x, y, z, :, :-1] = (P[i, j, 0] - centers[:, 0])[:, None] * R[x - 1, y, z, :, 1:]
-                            if x > 1:
-                                R[x, y, z, :, :-1] += (x - 1) * R[x - 2, y, z, :, 1:]
-                        elif (y != 0):
-                            R[x, y, z, :, :-1] = (P[i, j, 1] - centers[:, 1])[:, None] * R[x, y - 1, z, :, 1:]
-                            if y > 1:
-                                R[x, y, z, :, :-1] += (y - 1) * R[x, y - 2, z, :, 1:]
-                        else:
-                            R[x, y, z, :, :-1] = (P[i, j, 2] - centers[:, 2])[:, None] * R[x, y, z - 1, :, 1:]
-                            if z > 1:
-                                R[x, y, z, :, :-1] += (z - 1) * R[x, y, z - 2, :, 1:]
-
-            R_row.append(R[..., 0])
-        R_matrix.append(R_row)
-    return R_matrix, p, P
-
-
-def nuclear(Ex, Ey, Ez, R, p):
-    nuclear = xp.empty((len(Ex), len(Ex), centers.shape[0]))
-
-    for i in range(len(Ex)):
-        for j in range(len(Ex[0])):
-            V = Ex[i][j][:, None, None, None] * Ey[i][j][None, :, None, None] * Ez[i][j][None, None, :, None] * R[i][j]
-            nuclear[i, j, :] = xp.sum(V, axis=(0, 1, 2))
-
-    nuclear *= Z[None, None, :]
-    nuclear = xp.sum(nuclear, axis=-1)
-    nuclear *= -2 * xp.pi / p
-
-    return nuclear
-
 
 def nuclear_repulsion(Z, centers):
     result = 0.0
@@ -730,17 +541,6 @@ void eri_kernel(
 """
 
 
-def pack_E(E):
-    N = len(E)
-    rows = [E[a][b] for a in range(N) for b in range(N)]
-    lengths = np.asarray([row.size for row in rows], dtype=np.int32)
-    stride = int(lengths.max())
-    packed = xp.zeros((N * N, stride), dtype=xp.float64)
-    for pair, row in enumerate(rows):
-        packed[pair, :row.size] = row
-    return packed.ravel(), xp.asarray(lengths, dtype=xp.int32), stride
-
-
 def total_spin(unpaired_elec):
     N = int(xp.size(unpaired_elec))
     pairs = xp.stack([unpaired_elec, -unpaired_elec], axis=-1)
@@ -766,48 +566,116 @@ def UHF_density(C_a, C_b, N_a, N_b):
 
     return P_a, P_b
 
+def eri_loop(pair_list, pair_cache, shells, P, J_matrix, K_a, K_b):
+    threads = 128
 
-def contract_2d(matrix, contracted_position, max_contr):
-    cols = int(matrix.shape[1])
-    temp = xp.zeros((max_contr, cols))
-    xp.add.at(temp, contracted_position, matrix)
-    temp = temp.T
-    cols = int(temp.shape[1])
-    new_matrix = xp.zeros((max_contr, cols))
-    xp.add.at(new_matrix, contracted_position, temp)
-    return new_matrix.T
+    for ab_idx, (a, b) in enumerate(pair_list):
+        pair_ab = pair_cache[(a, b)]
 
+        for cd_idx in range(ab_idx + 1):
+            c, d = pair_list[cd_idx]
+            pair_cd = pair_cache[(c, d)]
+            eri_output = xp.zeros((pair_ab["K"] * pair_cd["K"]))
+            blocks = (pair_ab["K"] * pair_cd["K"] + threads - 1) // threads
+            eri_kernel((blocks,), (threads,), (
+                pair_ab["K"],
+                pair_ab["p"],
+                pair_ab["P"],
+                pair_ab["Ex"],
+                pair_ab["Ey"],
+                pair_ab["Ez"],
+                pair_ab["nx"],
+                pair_ab["ny"],
+                pair_ab["nz"],
+                pair_cd["K"],
+                pair_cd["p"],
+                pair_cd["P"],
+                pair_cd["Ex"],
+                pair_cd["Ey"],
+                pair_cd["Ez"],
+                pair_cd["nx"],
+                pair_cd["ny"],
+                pair_cd["nz"],
+                eri_output
+            ))
+            size_a = shells[a]["n_exponents"] * shells[a]["n_components"]
+            size_b = shells[b]["n_exponents"] * shells[b]["n_components"]
+            size_c = shells[c]["n_exponents"] * shells[c]["n_components"]
+            size_d = shells[d]["n_exponents"] * shells[d]["n_components"]
+            eri_output = eri_output.reshape(size_a, size_b, size_c, size_d)
+            eri_output *= shells[a]["normalization"][:, None, None, None]
+            eri_output *= shells[b]["normalization"][None, :, None, None]
+            eri_output *= shells[c]["normalization"][None, None, :, None]
+            eri_output *= shells[d]["normalization"][None, None, None, :]
+            eri_output = eri_output.reshape(
+                shells[a]["n_components"],
+                shells[a]["n_exponents"],
+                shells[b]["n_components"],
+                shells[b]["n_exponents"],
+                shells[c]["n_components"],
+                shells[c]["n_exponents"],
+                shells[d]["n_components"],
+                shells[d]["n_exponents"],
+            )
+            eri_output = xp.einsum(
+                "apbqcrds,ip,jq,kr,ls->iajbkcld",
+                eri_output,
+                shells[a]["coefficients"],
+                shells[b]["coefficients"],
+                shells[c]["coefficients"],
+                shells[d]["coefficients"],
+            ).reshape(
+                shells[a]["n_ao"],
+                shells[b]["n_ao"],
+                shells[c]["n_ao"],
+                shells[d]["n_ao"],
+            )
+            sa = slice(shells[a]["ao_start"], shells[a]["ao_stop"])
+            sb = slice(shells[b]["ao_start"], shells[b]["ao_stop"])
+            sc = slice(shells[c]["ao_start"], shells[c]["ao_stop"])
+            sd = slice(shells[d]["ao_start"], shells[d]["ao_stop"])
+            s = [sa, sb, sc, sd]
+            orientations = [
+                ((0, 1, 2, 3), eri_output),
+                ((1, 0, 2, 3), eri_output.transpose(1, 0, 2, 3)),
+                ((0, 1, 3, 2), eri_output.transpose(0, 1, 3, 2)),
+                ((1, 0, 3, 2), eri_output.transpose(1, 0, 3, 2)),
+                ((2, 3, 0, 1), eri_output.transpose(2, 3, 0, 1)),
+                ((3, 2, 0, 1), eri_output.transpose(3, 2, 0, 1)),
+                ((2, 3, 1, 0), eri_output.transpose(2, 3, 1, 0)),
+                ((3, 2, 1, 0), eri_output.transpose(3, 2, 1, 0)),
+            ]
+            base_shell_indices = (a, b, c, d)
+            seen = set()
 
-def contract_4d(matrix, contracted_position, max_contr):
-    N = int(xp.sqrt(matrix.shape[0]))
-    matrix = matrix.reshape(N, N, N, N)
+            for quad, eri in orientations:
+                actual_quad = tuple(
+                    base_shell_indices[index]
+                    for index in quad
+                )
 
-    temp = xp.zeros((max_contr, N, N, N))
-    xp.add.at(temp, contracted_position, matrix)
+                if actual_quad in seen:
+                    continue
 
-    temp1 = xp.zeros((max_contr, max_contr, N, N))
-    temp = xp.moveaxis(temp, 1, 0)
-    xp.add.at(temp1, contracted_position, temp)
-    xp.moveaxis(temp1, 0, 1)
+                seen.add(actual_quad)
+                J_matrix[s[quad[0]], s[quad[1]]] += xp.einsum(
+                    "abcd,cd->ab",
+                    eri,
+                    P[s[quad[2]], s[quad[3]]],
+                )
 
-    temp2 = xp.zeros((max_contr, max_contr, max_contr, N))
-    temp1 = xp.moveaxis(temp1, 2, 0)
-    xp.add.at(temp2, contracted_position, temp1)
-    temp2 = xp.moveaxis(temp2, 0, 2)
+                K_a[s[quad[0]], s[quad[2]]] += xp.einsum(
+                    "abcd,bd->ac",
+                    eri,
+                    P_a[s[quad[1]], s[quad[3]]],
+                )
 
-    temp3 = xp.zeros((max_contr, max_contr, max_contr, max_contr))
-    temp2 = xp.moveaxis(temp2, 3, 0)
-    xp.add.at(temp3, contracted_position, temp2)
-    temp3 = xp.moveaxis(temp3, 0, 3)
+                K_b[s[quad[0]], s[quad[2]]] += xp.einsum(
+                    "abcd,bd->ac",
+                    eri,
+                    P_b[s[quad[1]], s[quad[3]]],
+                )
 
-    return temp3
-
-
-def contract_1d(matrix, contracted_position, max_contr):
-    cols = int(matrix.shape[1])
-    temp = xp.zeros((max_contr, cols), dtype=xp.float32)
-    xp.add.at(temp, contracted_position, matrix)
-    return temp
 
 print("Setting Kernel...")
 module = cp.RawModule(
@@ -989,82 +857,152 @@ orb_energy_b = 0
 P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
 E_total = -1000
 count = 0
-threads = 128
 
 while True:
+    print(count)
     P = P_a + P_b
 
     J_matrix = xp.zeros_like(H_matrix)
     K_a = xp.zeros_like(H_matrix)
     K_b = xp.zeros_like(H_matrix)
+    eri_loop(pair_list, pair_cache, shells, P, J_matrix, K_a, K_b)
 
-    for ab_idx, (a, b) in enumerate(pair_list):
-        print("entered")
-        pair_ab = pair_cache[(a, b)]
+    Fock_a = H_matrix + J_matrix - K_a
+    Fock_b = H_matrix + J_matrix - K_b
 
-        for cd_idx in range(ab_idx + 1):
-            c, d = pair_list[cd_idx]
-            pair_cd = pair_cache[(c, d)]
-            eri_output = xp.zeros((pair_ab["K"] * pair_cd["K"]))
-            blocks = (pair_ab["K"] * pair_cd["K"] + threads - 1) // threads
-            eri_kernel((blocks,), (threads,), (
-                pair_ab["K"],
-                pair_ab["p"],
-                pair_ab["P"],
-                pair_ab["Ex"],
-                pair_ab["Ey"],
-                pair_ab["Ez"],
-                pair_ab["nx"],
-                pair_ab["ny"],
-                pair_ab["nz"],
-                pair_cd["K"],
-                pair_cd["p"],
-                pair_cd["P"],
-                pair_cd["Ex"],
-                pair_cd["Ey"],
-                pair_cd["Ez"],
-                pair_cd["nx"],
-                pair_cd["ny"],
-                pair_cd["nz"],
-                eri_output
-            ))
-            size_a = shells[a]["n_exponents"] * shells[a]["n_components"]
-            size_b = shells[b]["n_exponents"] * shells[b]["n_components"]
-            size_c = shells[c]["n_exponents"] * shells[c]["n_components"]
-            size_d = shells[d]["n_exponents"] * shells[d]["n_components"]
-            eri_output = eri_output.reshape(size_a, size_b, size_c, size_d)
-            sa = slice(shells[a]["ao_start"], shells[a]["ao_stop"])
-            sb = slice(shells[b]["ao_start"], shells[b]["ao_stop"])
-            sc = slice(shells[c]["ao_start"], shells[c]["ao_stop"])
-            sd = slice(shells[d]["ao_start"], shells[d]["ao_stop"])
-            s = [sa, sb, sc, sd]
-            orientations = [
-                ((0, 1, 2, 3), eri_output),
-                ((1, 0, 2, 3), eri_output.transpose(1, 0, 2, 3)),
-                ((0, 1, 3, 2), eri_output.transpose(0, 1, 3, 2)),
-                ((1, 0, 3, 2), eri_output.transpose(1, 0, 3, 2)),
-                ((2, 3, 0, 1), eri_output.transpose(2, 3, 0, 1)),
-                ((3, 2, 0, 1), eri_output.transpose(3, 2, 0, 1)),
-                ((2, 3, 1, 0), eri_output.transpose(2, 3, 1, 0)),
-                ((3, 2, 1, 0), eri_output.transpose(3, 2, 1, 0)),
-            ]
-            for quad, eri in orientations:
-                J_matrix[sa, sb] += xp.einsum(
-                    "abcd,cd->ab",
-                    eri,
-                    P[quad[2], quad[3]],
-                )
+    E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
+    E_total_new = E_elec + E_NN
+    delta_E = xp.abs(E_total_new - E_total)
+    Fock_a_prime = X_t @ Fock_a @ X
+    Fock_b_prime = X_t @ Fock_b @ X
+    orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
+    orb_energy_b, C_b_prime = xp.linalg.eigh(Fock_b_prime)
 
-                K_a[sa, sc] += xp.einsum(
-                    "abcd,bd->ac",
-                    eri,
-                    P_a[quad[1], quad[3]],
-                )
+    C_a_new = X @ C_a_prime
+    C_b_new = X @ C_b_prime
+    P_a_new, P_b_new = UHF_density(C_a_new, C_b_new, N_a, N_b)
+    delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
 
-                K_b[sa, sc] += xp.einsum(
-                    "abcd,bd->ac",
-                    eri,
-                    P_b[quad[1], quad[3]],
-                )
+    if (delta_E < 1e-8 and delta_P < 1e-6) or (count > 100):
+        P = P_a + P_b
+        J_matrix = xp.zeros_like(H_matrix)
+        K_a = xp.zeros_like(H_matrix)
+        K_b = xp.zeros_like(H_matrix)
+        eri_loop(pair_list, pair_cache, shells, P, J_matrix, K_a, K_b)
+        Fock_a = H_matrix + J_matrix - K_a
+        Fock_b = H_matrix + J_matrix - K_b
 
-    print("\n")
+        E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
+        E_total_new = E_elec + E_NN
+        delta_E = xp.abs(E_total_new - E_total)
+        Fock_a_prime = X_t @ Fock_a @ X
+        Fock_b_prime = X_t @ Fock_b @ X
+        orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
+        orb_energy_b, C_b_prime = xp.linalg.eigh(Fock_b_prime)
+        C_a = C_a_new
+        C_b = C_b_new
+        break
+
+    E_total = E_total_new
+    P_a = P_a_new
+    P_b = P_b_new
+    count += 1
+
+
+print("Initializing Grid...")
+padding = 3
+grid_spacing = 0.05
+minx = float(xp.min(centers[:, 0]) - padding)
+maxx = float(xp.max(centers[:, 0]) + padding)
+miny = float(xp.min(centers[:, 1]) - padding)
+maxy = float(xp.max(centers[:, 1]) + padding)
+minz = float(xp.min(centers[:, 2]) - padding)
+maxz = float(xp.max(centers[:, 2]) + padding)
+
+x_space = math.ceil((maxx-minx)/grid_spacing)+1
+y_space = math.ceil((maxy-miny)/grid_spacing)+1
+z_space = math.ceil((maxz-minz)/grid_spacing)+1
+print("X_space: ", x_space)
+print("Y_space: ", y_space)
+print("Z_space: ", z_space)
+gridx = xp.linspace(minx, maxx, x_space)
+gridy = xp.linspace(miny, maxy, y_space)
+gridz = xp.linspace(minz, maxz, z_space)
+X_shape = xp.size(gridx)
+Y_shape = xp.size(gridy)
+Z_shape = xp.size(gridz)
+gridx = xp.broadcast_to(gridx[:, None, None], (X_shape, Y_shape, Z_shape))
+gridy = xp.broadcast_to(gridy[None, :, None], (X_shape, Y_shape, Z_shape))
+gridz = xp.broadcast_to(gridz[None, None, :], (X_shape, Y_shape, Z_shape))
+grid = xp.stack((gridx, gridy, gridz), axis=-1, dtype=xp.float32)
+grid_shape = grid.shape[:-1]
+grid = grid.reshape(-1, 3)
+grid_len = int(grid.shape[0])
+
+print("Clearing VRAM...")
+keep = ["grid", "grid_len", "coeffs", "normals_1d", "cen", "pow", "exp", "P_a", "P_b", "C_a", "xp", "np", "contract_1d", "contracted_position", "max_contr"]
+for name in list(globals().keys()):
+    if not name.startswith('_') and name not in keep and name != 'cp' and name != 'gc':
+        del globals()[name]
+gc.collect()
+cp.get_default_memory_pool().free_all_blocks()
+
+print("Evaluating Grid...")
+chunk_size = int(1e6)
+C_a = C_a.astype(xp.float32)
+
+
+xp.save("preprocess/grid.npy", grid)
+number_of_orbitals = C_a.shape[1]
+total_file = np.lib.format.open_memmap(
+    "preprocess/total_density.npy",
+    mode="w+",
+    dtype=np.float32,
+    shape=(number_of_orbitals, grid_len)
+)
+
+spin_file = np.lib.format.open_memmap(
+    "preprocess/spin_density.npy",
+    mode="w+",
+    dtype=np.float32,
+    shape=(number_of_orbitals, grid_len)
+)
+
+C_a = C_a.T
+C_b = C_b.T
+write = 0
+while write != grid_len:
+    write_to = min(write + chunk_size, grid_len)
+    ao_vals = xp.empty((total_ao, write_to-write))
+    for shell in shells:
+        powers = shell["components"]
+        normalization = shell["normalization"].reshape(shell["n_components"], shell["n_exponents"])
+
+        pos_diff = grid[write:write_to] - shell["atom_pos"]
+        R2 = xp.sum(pos_diff ** 2, axis=-1)
+        radial = xp.exp(-shell["exponents"][:, None] * R2[None, :])
+        vals = (
+                pos_diff[None, :, 0] ** powers[:, None, 0]
+                * pos_diff[None, :, 1] ** powers[:, None, 1]
+                * pos_diff[None, :, 2] ** powers[:, None, 2]
+        )
+        vals = normalization[:, :, None] * vals[:, None, :] * radial[None, :, :]
+        contracted_values = xp.einsum("kp,apg->kag",shell["coefficients"], vals)
+        vals = vals.reshape(shell["n_ao"], -1)
+        ao_vals[shell["ao_start"]:shell["ao_stop"], :] = vals
+
+    psi_a = C_a @ ao_vals
+    psi_b = C_b @ ao_vals
+    mo_density_a = xp.real(psi_a.conj() * psi_a)
+    mo_density_b = xp.real(psi_b.conj() * psi_b)
+    occ_a = xp.zeros(total_ao)
+    occ_b = xp.zeros(total_ao)
+    occ_a[:int(N_a)] = 1.0
+    occ_b[:int(N_b)] = 1.0
+    occupied_density_a = occ_a[:, None] * mo_density_a
+    occupied_density_b = occ_b[:, None] * mo_density_b
+    orbital_total_density = occupied_density_a + occupied_density_b
+    orbital_spin_density = occupied_density_a - occupied_density_b
+
+    total_file[:, write:write_to] = orbital_total_density
+    spin_file[:, write:write_to] = orbital_spin_density
