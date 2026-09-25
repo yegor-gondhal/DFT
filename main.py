@@ -2,10 +2,7 @@ import gc
 import numpy as np
 import cupy as cp
 import cupyx.scipy.special as mspecial
-#import basis_set_exchange as bse
 import json
-#import ragged
-#import awkward as ak
 import time
 import math
 
@@ -37,9 +34,9 @@ f_orb = xp.array(f_orb)
 atoms = ["30", "30", "30"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 '''
-atoms = ["3"] #23
+atoms = ["7"] #23
 centers = [[0, 0, 0]]
-unpaired_elec = [1] #2
+unpaired_elec = [3] #2
 molecular_charge = 0
 
 unpaired_elec = xp.asarray(unpaired_elec)
@@ -288,7 +285,7 @@ __device__ void calc_E(double alpha, double beta, double A, double B, int la, in
     int order = 0;
     for (int step = 0; step < la; ++step) {{
         int new_order = order + 1;
-        for (int t = 0; t < new_order; ++t) {{
+        for (int t = 0; t <= new_order; ++t) {{
             double value = 0.0;
             
             if (t <= order) {{
@@ -312,7 +309,7 @@ __device__ void calc_E(double alpha, double beta, double A, double B, int la, in
     
     for (int step = 0; step < lb; ++step) {{
         int new_order = order + 1;
-        for (int t = 0; t < new_order; ++t) {{
+        for (int t = 0; t <= new_order; ++t) {{
             double value = 0.0;
             
             if (t <= order) {{
@@ -786,7 +783,6 @@ P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
 E_total = -1000
 count = 0
 while True:
-    print(count)
     P = P_a + P_b
     J_matrix = xp.sum(P[None, None, :, :] * ERI, axis=(-1, -2))
     K_a = xp.sum(P_a[None, :, None, :] * ERI, axis=(1, 3))

@@ -2,10 +2,7 @@ import gc
 import numpy as np
 import cupy as cp
 import cupyx.scipy.special as mspecial
-# import basis_set_exchange as bse
 import json
-# import ragged
-# import awkward as ak
 import time
 import math
 
@@ -39,9 +36,9 @@ f_orb = xp.array(f_orb)
 atoms = ["30", "30", "30"]
 centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 '''
-atoms = ["3"]
+atoms = ["23"]
 centers = [[0, 0, 0]]
-unpaired_elec = [1]
+unpaired_elec = [3]
 molecular_charge = 0
 
 unpaired_elec = xp.asarray(unpaired_elec)
@@ -87,7 +84,6 @@ centers = xp.array(centers)
 Z = xp.empty(len(atoms), xp.int32)
 for i in range(len(atoms)):
     Z[i] = int(atoms[i])
-
 
 def sym(matrix):
     return xp.isclose(matrix, matrix.T).all()
@@ -251,7 +247,7 @@ __device__ void calc_E(double alpha, double beta, double A, double B, int la, in
     int order = 0;
     for (int step = 0; step < la; ++step) {{
         int new_order = order + 1;
-        for (int t = 0; t < new_order; ++t) {{
+        for (int t = 0; t <= new_order; ++t) {{
             double value = 0.0;
 
             if (t <= order) {{
@@ -275,7 +271,7 @@ __device__ void calc_E(double alpha, double beta, double A, double B, int la, in
 
     for (int step = 0; step < lb; ++step) {{
         int new_order = order + 1;
-        for (int t = 0; t < new_order; ++t) {{
+        for (int t = 0; t <= new_order; ++t) {{
             double value = 0.0;
 
             if (t <= order) {{
@@ -558,15 +554,15 @@ def UHF_density(C_a, C_b, N_a, N_b):
     arr_a = xp.arange(0, N_a)
     arr_b = xp.arange(0, N_b)
 
-    C_a_temp = C_a[:, arr_a]
-    P_a = xp.sum(C_a_temp[:, None, :] * C_a_temp[None, :, :], axis=-1)
+    C_a_occ = C_a[:, arr_a]
+    C_b_occ = C_b[:, arr_b]
 
-    C_b_temp = C_b[:, arr_b]
-    P_b = xp.sum(C_b_temp[:, None, :] * C_b_temp[None, :, :], axis=-1)
+    P_a = C_a_occ @ C_a_occ.T
+    P_b = C_b_occ @ C_b_occ.T
 
     return P_a, P_b
 
-def eri_loop(pair_list, pair_cache, shells, P, J_matrix, K_a, K_b):
+def eri_loop(pair_list, pair_cache, shells, P, P_a, P_b, J_matrix, K_a, K_b):
     threads = 128
 
     for ab_idx, (a, b) in enumerate(pair_list):
@@ -676,6 +672,49 @@ def eri_loop(pair_list, pair_cache, shells, P, J_matrix, K_a, K_b):
                     P_b[s[quad[1]], s[quad[3]]],
                 )
 
+def independent(shells, sphere_total_ao, C):
+    C_new = xp.empty((sphere_total_ao, C.shape[1]))
+    for shell in shells:
+        momentum = shell["angular_momentum"]
+        ao_start = shell["ao_start"]
+        ao_stop = shell["ao_stop"]
+        sphere_ao_start = shell["sphere_ao_start"]
+        sphere_ao_stop = shell["sphere_ao_stop"]
+        n_comp = shell["n_components"]
+        n = shell["n_ao"] // n_comp
+        if momentum == 0 or momentum == 1:
+            C_new[sphere_ao_start:sphere_ao_stop, :] = C[ao_start:ao_stop, :]
+        elif momentum == 2:
+            for i in range(n):
+                C_new[sphere_ao_start, :] = C[ao_start+1, :]
+                C_new[sphere_ao_start+1, :] = C[ao_start+3, :]
+                C_new[sphere_ao_start+2, :] = C[ao_start+4, :]
+                C_new[sphere_ao_start+3, :] = xp.sqrt(3)/2 * (C[ao_start, :] - C[ao_start+2, :])
+                C_new[sphere_ao_start+4, :] = C[ao_start+5, :] - 0.5*C[ao_start, :] - 0.5*C[ao_start+2, :]
+                sphere_ao_start += 5
+                sphere_ao_stop += 5
+                ao_start += 6
+                ao_stop += 6
+        elif momentum == 3:
+            sqrt2 = xp.sqrt(2.0)
+            sqrt3 = xp.sqrt(3.0)
+            sqrt5 = xp.sqrt(5.0)
+            sqrt6 = xp.sqrt(6.0)
+            sqrt10 = xp.sqrt(10.0)
+            sqrt30 = xp.sqrt(30.0)
+            for i in range(n):
+                C_new[sphere_ao_start, :] = -3*sqrt5/10 * (C[ao_start+4, :] + C[ao_start+6, :]) + C[ao_start+9, :]
+                C_new[sphere_ao_start+1, :] = -sqrt6/4 * C[ao_start, :] - sqrt30/20 * C[ao_start+2, :] + sqrt30/5 * C[ao_start+7, :]
+                C_new[sphere_ao_start+2, :] = -sqrt30/20 * C[ao_start+1, :] - sqrt6/4 * C[ao_start+3, :] + sqrt30/5 * C[ao_start+8, :]
+                C_new[sphere_ao_start+3, :] = sqrt3/2 * C[ao_start+4, :] - sqrt3/2 * C[ao_start+6, :]
+                C_new[sphere_ao_start+4, :] = C[ao_start+5, :]
+                C_new[sphere_ao_start+5, :] = sqrt10/4 * C[ao_start, :] - 3*sqrt2/4 * C[ao_start+2, :]
+                C_new[sphere_ao_start+6, :] = 3*sqrt2/4 *C[ao_start+1, :] - sqrt10/4 * C[ao_start+3, :]
+                sphere_ao_start += 7
+                sphere_ao_stop += 7
+                ao_start += 10
+                ao_stop += 10
+    return C_new
 
 print("Setting Kernel...")
 module = cp.RawModule(
@@ -691,18 +730,23 @@ cp.cuda.runtime.deviceSetLimit(cp.cuda.runtime.cudaLimitStackSize,32768)
 
 print("Defining Shell...")
 total_ao = 0
+sphere_total_ao = 0
 for shell in shells:
     shell["components"] = xp.array(combinations(shell["angular_momentum"]), dtype=xp.int32)
     shell["n_components"] = len(shell["components"])
     shell["n_contractions"] = shell["coefficients"].shape[0]
     shell["n_ao"] = shell["n_components"] * shell["n_contractions"]
+    shell["sphere_n_ao"] = shell["n_contractions"] * (2*shell["angular_momentum"] + 1)
     shell["n_exponents"] = xp.size(shell["exponents"])
     shell["ao_start"] = total_ao
+    shell["sphere_ao_start"] = sphere_total_ao
     shell["ao_stop"] = total_ao + shell["n_ao"]
+    shell["sphere_ao_stop"] = sphere_total_ao + shell["sphere_n_ao"]
     exp = xp.tile(shell["exponents"], shell["n_components"])
     pow = xp.repeat(shell["components"], shell["n_exponents"], axis=0).reshape(-1, 3)
     shell["normalization"] = normal(exp, pow)
     total_ao = shell["ao_stop"]
+    sphere_total_ao = shell["sphere_ao_stop"]
 
 overlaps = xp.empty((total_ao, total_ao))
 T_matrix = xp.empty((total_ao, total_ao))
@@ -821,6 +865,11 @@ for i, shell_a in enumerate(shells):
             T_matrix[sliceb, slicea] = T_block.T
             V_matrix[sliceb, slicea] = V_block.T
 
+A = independent(shells, sphere_total_ao, xp.eye(total_ao))
+overlaps = A @ overlaps @ A.T
+T_matrix = A @ T_matrix @ A.T
+V_matrix = A @ V_matrix @ A.T
+
 
 print("Setting Up SCF...")
 E_NN = nuclear_repulsion(Z, centers)
@@ -840,7 +889,6 @@ C_a, C_b = C, C
 
 total_spin = total_spin(unpaired_elec)
 mult = 2*total_spin + 1
-print(mult)
 N_a = (elec_count + mult - 1)/2
 N_b = (elec_count - mult + 1)/2
 N_e = N_a + N_b
@@ -859,17 +907,22 @@ E_total = -1000
 count = 0
 
 while True:
-    print(count)
-    P = P_a + P_b
+    P_a_cart = A.T @ P_a @ A
+    P_b_cart = A.T @ P_b @ A
+    P = P_a_cart + P_b_cart
 
-    J_matrix = xp.zeros_like(H_matrix)
-    K_a = xp.zeros_like(H_matrix)
-    K_b = xp.zeros_like(H_matrix)
-    eri_loop(pair_list, pair_cache, shells, P, J_matrix, K_a, K_b)
+    J_matrix = xp.zeros((total_ao, total_ao))
+    K_a = xp.zeros((total_ao, total_ao))
+    K_b = xp.zeros((total_ao, total_ao))
+    eri_loop(pair_list, pair_cache, shells, P, P_a_cart, P_b_cart, J_matrix, K_a, K_b)
+
+    J_matrix = A @ J_matrix @ A.T
+    K_a = A @ K_a @ A.T
+    K_b = A @ K_b @ A.T
+    P = A @ P @ A.T
 
     Fock_a = H_matrix + J_matrix - K_a
     Fock_b = H_matrix + J_matrix - K_b
-
     E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
     E_total_new = E_elec + E_NN
     delta_E = xp.abs(E_total_new - E_total)
@@ -884,11 +937,18 @@ while True:
     delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
 
     if (delta_E < 1e-8 and delta_P < 1e-6) or (count > 100):
-        P = P_a + P_b
-        J_matrix = xp.zeros_like(H_matrix)
-        K_a = xp.zeros_like(H_matrix)
-        K_b = xp.zeros_like(H_matrix)
-        eri_loop(pair_list, pair_cache, shells, P, J_matrix, K_a, K_b)
+        P_a_cart = A.T @ P_a @ A
+        P_b_cart = A.T @ P_b @ A
+        P = P_a_cart + P_b_cart
+        J_matrix = xp.zeros((total_ao, total_ao))
+        K_a = xp.zeros((total_ao, total_ao))
+        K_b = xp.zeros((total_ao, total_ao))
+        eri_loop(pair_list, pair_cache, shells, P, P_a_cart, P_b_cart, J_matrix, K_a, K_b)
+
+        J_matrix = A @ J_matrix @ A.T
+        K_a = A @ K_a @ A.T
+        K_b = A @ K_b @ A.T
+        P = A @ P @ A.T
         Fock_a = H_matrix + J_matrix - K_a
         Fock_b = H_matrix + J_matrix - K_b
 
@@ -899,8 +959,8 @@ while True:
         Fock_b_prime = X_t @ Fock_b @ X
         orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
         orb_energy_b, C_b_prime = xp.linalg.eigh(Fock_b_prime)
-        C_a = C_a_new
-        C_b = C_b_new
+        C_a = X @ C_a_prime
+        C_b = X @ C_b_prime
         break
 
     E_total = E_total_new
@@ -908,9 +968,8 @@ while True:
     P_b = P_b_new
     count += 1
 
-
 print("Initializing Grid...")
-padding = 3
+padding = 10
 grid_spacing = 0.05
 minx = float(xp.min(centers[:, 0]) - padding)
 maxx = float(xp.max(centers[:, 0]) + padding)
@@ -940,7 +999,7 @@ grid = grid.reshape(-1, 3)
 grid_len = int(grid.shape[0])
 
 print("Clearing VRAM...")
-keep = ["grid", "grid_len", "coeffs", "normals_1d", "cen", "pow", "exp", "P_a", "P_b", "C_a", "xp", "np", "contract_1d", "contracted_position", "max_contr"]
+keep = ["grid", "grid_len", "orb_energy_a", "A", "C_a", "C_b", "independent", "sphere_total_ao", "N_a", "N_b", "total_ao", "shells", "xp", "np"]
 for name in list(globals().keys()):
     if not name.startswith('_') and name not in keep and name != 'cp' and name != 'gc':
         del globals()[name]
@@ -948,28 +1007,27 @@ gc.collect()
 cp.get_default_memory_pool().free_all_blocks()
 
 print("Evaluating Grid...")
-chunk_size = int(1e6)
-C_a = C_a.astype(xp.float32)
+chunk_size = int(5e5)
+max_N = int(max(N_a, N_b))
+print("Orbitals: ", max_N)
+C_a = C_a.astype(xp.float32)[:, :max_N].T
+C_b = C_b.astype(xp.float32)[:, :max_N].T
 
 
 xp.save("preprocess/grid.npy", grid)
-number_of_orbitals = C_a.shape[1]
 total_file = np.lib.format.open_memmap(
     "preprocess/total_density.npy",
     mode="w+",
     dtype=np.float32,
-    shape=(number_of_orbitals, grid_len)
+    shape=(max_N, grid_len)
 )
 
 spin_file = np.lib.format.open_memmap(
     "preprocess/spin_density.npy",
     mode="w+",
     dtype=np.float32,
-    shape=(number_of_orbitals, grid_len)
+    shape=(max_N, grid_len)
 )
-
-C_a = C_a.T
-C_b = C_b.T
 write = 0
 while write != grid_len:
     write_to = min(write + chunk_size, grid_len)
@@ -987,16 +1045,18 @@ while write != grid_len:
                 * pos_diff[None, :, 2] ** powers[:, None, 2]
         )
         vals = normalization[:, :, None] * vals[:, None, :] * radial[None, :, :]
-        contracted_values = xp.einsum("kp,apg->kag",shell["coefficients"], vals)
+        vals = xp.einsum("kp,apg->kag",shell["coefficients"], vals)
         vals = vals.reshape(shell["n_ao"], -1)
         ao_vals[shell["ao_start"]:shell["ao_stop"], :] = vals
 
+    ao_vals = A @ ao_vals
     psi_a = C_a @ ao_vals
     psi_b = C_b @ ao_vals
     mo_density_a = xp.real(psi_a.conj() * psi_a)
     mo_density_b = xp.real(psi_b.conj() * psi_b)
-    occ_a = xp.zeros(total_ao)
-    occ_b = xp.zeros(total_ao)
+
+    occ_a = xp.zeros(max_N)
+    occ_b = xp.zeros(max_N)
     occ_a[:int(N_a)] = 1.0
     occ_b[:int(N_b)] = 1.0
     occupied_density_a = occ_a[:, None] * mo_density_a
@@ -1004,5 +1064,7 @@ while write != grid_len:
     orbital_total_density = occupied_density_a + occupied_density_b
     orbital_spin_density = occupied_density_a - occupied_density_b
 
-    total_file[:, write:write_to] = orbital_total_density
-    spin_file[:, write:write_to] = orbital_spin_density
+
+    total_file[:, write:write_to] = xp.asnumpy(orbital_total_density)
+    spin_file[:, write:write_to] = xp.asnumpy(orbital_spin_density)
+    write = write_to
