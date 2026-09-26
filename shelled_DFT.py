@@ -32,17 +32,18 @@ p_orb = xp.array(p_orb)
 d_orb = xp.array(d_orb)
 f_orb = xp.array(f_orb)
 
+
+atoms = ["28", "6", "6", "6", "6", "7", "7", "7", "7"]
+centers = [[0, 0, 0], [3.5, 0, 0], [-3.5, 0, 0], [0, 3.5, 0], [0, -3.5, 0], [5.7, 0, 0], [-5.7, 0, 0], [0, 5.7, 0], [0, -5.7, 0]]
+unpaired_elec = [0]
+molecular_charge = -2
 '''
-atoms = ["30", "30", "30"]
-centers = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
-'''
-atoms = ["23"]
+atoms = ["7"]
 centers = [[0, 0, 0]]
 unpaired_elec = [3]
 molecular_charge = 0
-
 unpaired_elec = xp.asarray(unpaired_elec)
-
+'''
 exp = []
 coeffs = []
 cen = []
@@ -562,9 +563,60 @@ def UHF_density(C_a, C_b, N_a, N_b):
 
     return P_a, P_b
 
-def eri_loop(pair_list, pair_cache, shells, P, P_a, P_b, J_matrix, K_a, K_b):
-    threads = 128
 
+def logarithmic_progress(delta, initial_delta, tolerance):
+    if initial_delta is None:
+        return 0.0
+
+    delta = float(delta)
+    initial_delta = float(initial_delta)
+
+    if not np.isfinite(delta) or not np.isfinite(initial_delta):
+        return 0.0
+
+    if initial_delta <= tolerance:
+        return 100.0 if delta <= tolerance else 0.0
+
+    current_log = np.log10(max(delta, tolerance))
+    initial_log = np.log10(initial_delta)
+    target_log = np.log10(tolerance)
+    progress = (initial_log - current_log) / (initial_log - target_log)
+    return 100.0 * float(np.clip(progress, 0.0, 1.0))
+
+def calc_eri(pair_list, pair_cache, shells):
+    N = 0
+    idxs = 0
+    for ab_idx, (a, b) in enumerate(pair_list):
+        for cd_idx in range(ab_idx + 1):
+            c, d = pair_list[cd_idx]
+
+            N += shells[a]["n_ao"]* shells[b]["n_ao"]* shells[c]["n_ao"]* shells[d]["n_ao"]
+            idxs += 1
+
+
+
+    eri_values = np.lib.format.open_memmap(
+        "compute_eri/eri_values.npy",
+        mode="w+",
+        dtype=np.float64,
+        shape=(N,),
+    )
+    eri_indices = np.lib.format.open_memmap(
+        "compute_eri/eri_indices.npy",
+        mode="w+",
+        dtype=np.int32,
+        shape=(idxs, 2),
+    )
+    eri_quads = np.lib.format.open_memmap(
+        "compute_eri/eri_quads.npy",
+        mode="w+",
+        dtype=np.int16,
+        shape=(idxs, 4),
+    )
+
+    threads = 128
+    cur_index = 0
+    count = 0
     for ab_idx, (a, b) in enumerate(pair_list):
         pair_ab = pair_cache[(a, b)]
 
@@ -620,57 +672,72 @@ def eri_loop(pair_list, pair_cache, shells, P, P_a, P_b, J_matrix, K_a, K_b):
                 shells[b]["coefficients"],
                 shells[c]["coefficients"],
                 shells[d]["coefficients"],
-            ).reshape(
-                shells[a]["n_ao"],
-                shells[b]["n_ao"],
-                shells[c]["n_ao"],
-                shells[d]["n_ao"],
             )
-            sa = slice(shells[a]["ao_start"], shells[a]["ao_stop"])
-            sb = slice(shells[b]["ao_start"], shells[b]["ao_stop"])
-            sc = slice(shells[c]["ao_start"], shells[c]["ao_stop"])
-            sd = slice(shells[d]["ao_start"], shells[d]["ao_stop"])
-            s = [sa, sb, sc, sd]
-            orientations = [
-                ((0, 1, 2, 3), eri_output),
-                ((1, 0, 2, 3), eri_output.transpose(1, 0, 2, 3)),
-                ((0, 1, 3, 2), eri_output.transpose(0, 1, 3, 2)),
-                ((1, 0, 3, 2), eri_output.transpose(1, 0, 3, 2)),
-                ((2, 3, 0, 1), eri_output.transpose(2, 3, 0, 1)),
-                ((3, 2, 0, 1), eri_output.transpose(3, 2, 0, 1)),
-                ((2, 3, 1, 0), eri_output.transpose(2, 3, 1, 0)),
-                ((3, 2, 1, 0), eri_output.transpose(3, 2, 1, 0)),
-            ]
-            base_shell_indices = (a, b, c, d)
-            seen = set()
+            eri_output = eri_output.flatten()
+            size = xp.size(eri_output)
 
-            for quad, eri in orientations:
-                actual_quad = tuple(
-                    base_shell_indices[index]
-                    for index in quad
-                )
+            eri_values[cur_index:cur_index + size] = xp.asnumpy(eri_output)
+            eri_indices[count] = np.array([cur_index, cur_index + size])
+            eri_quads[count] = np.array([a, b, c, d])
 
-                if actual_quad in seen:
-                    continue
+            cur_index += size
+            count += 1
 
-                seen.add(actual_quad)
-                J_matrix[s[quad[0]], s[quad[1]]] += xp.einsum(
-                    "abcd,cd->ab",
-                    eri,
-                    P[s[quad[2]], s[quad[3]]],
-                )
 
-                K_a[s[quad[0]], s[quad[2]]] += xp.einsum(
-                    "abcd,bd->ac",
-                    eri,
-                    P_a[s[quad[1]], s[quad[3]]],
-                )
+def fill_matrices(shells, P, P_a, P_b, J_matrix, K_a, K_b):
+    eri_values = np.lib.format.open_memmap("compute_eri/eri_values.npy", "r")
+    eri_indices = np.lib.format.open_memmap("compute_eri/eri_indices.npy", "r")
+    eri_quads = np.lib.format.open_memmap("compute_eri/eri_quads.npy", "r")
 
-                K_b[s[quad[0]], s[quad[2]]] += xp.einsum(
-                    "abcd,bd->ac",
-                    eri,
-                    P_b[s[quad[1]], s[quad[3]]],
-                )
+    for i, idxs in enumerate(eri_indices):
+        eri_block = xp.asarray(eri_values[idxs[0]:idxs[1]])
+        quad = eri_quads[i]
+        eri_block = eri_block.reshape(shells[quad[0]]["n_ao"], shells[quad[1]]["n_ao"], shells[quad[2]]["n_ao"], shells[quad[3]]["n_ao"])
+        s = []
+        for shell_idx in quad:
+            s.append(slice(shells[shell_idx]["ao_start"], shells[shell_idx]["ao_stop"]))
+
+        orientations = [
+            ((0, 1, 2, 3), eri_block),
+            ((1, 0, 2, 3), eri_block.transpose(1, 0, 2, 3)),
+            ((0, 1, 3, 2), eri_block.transpose(0, 1, 3, 2)),
+            ((1, 0, 3, 2), eri_block.transpose(1, 0, 3, 2)),
+            ((2, 3, 0, 1), eri_block.transpose(2, 3, 0, 1)),
+            ((3, 2, 0, 1), eri_block.transpose(3, 2, 0, 1)),
+            ((2, 3, 1, 0), eri_block.transpose(2, 3, 1, 0)),
+            ((3, 2, 1, 0), eri_block.transpose(3, 2, 1, 0)),
+        ]
+
+        quad = tuple(quad.tolist())
+        seen = set()
+
+        for sub_quad, eri in orientations:
+            actual_quad = tuple(
+                quad[index]
+                for index in sub_quad
+            )
+
+            if actual_quad in seen:
+                continue
+
+            seen.add(actual_quad)
+            J_matrix[s[sub_quad[0]], s[sub_quad[1]]] += xp.einsum(
+                "abcd,cd->ab",
+                eri,
+                P[s[sub_quad[2]], s[sub_quad[3]]],
+            )
+
+            K_a[s[sub_quad[0]], s[sub_quad[2]]] += xp.einsum(
+                "abcd,bd->ac",
+                eri,
+                P_a[s[sub_quad[1]], s[sub_quad[3]]],
+            )
+
+            K_b[s[sub_quad[0]], s[sub_quad[2]]] += xp.einsum(
+                "abcd,bd->ac",
+                eri,
+                P_b[s[sub_quad[1]], s[sub_quad[3]]],
+            )
 
 def independent(shells, sphere_total_ao, C):
     C_new = xp.empty((sphere_total_ao, C.shape[1]))
@@ -755,7 +822,7 @@ V_matrix = xp.empty((total_ao, total_ao))
 pair_cache = {}
 pair_list = []
 
-print("Overlaps/T_matrix...")
+print("Overlaps/T_matrix/V_matrix...")
 for i, shell_a in enumerate(shells):
     for j in range(i+1):
         shell_b = shells[j]
@@ -887,8 +954,9 @@ orb_energy, C_prime = xp.linalg.eigh(F_prime)
 C = X @ C_prime
 C_a, C_b = C, C
 
-total_spin = total_spin(unpaired_elec)
-mult = 2*total_spin + 1
+#total_spin = total_spin(unpaired_elec)
+#mult = 2*total_spin + 1
+mult = 1
 N_a = (elec_count + mult - 1)/2
 N_b = (elec_count - mult + 1)/2
 N_e = N_a + N_b
@@ -903,29 +971,35 @@ K_b = 0
 orb_energy_a = 0
 orb_energy_b = 0
 P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
-E_total = -1000
+energy_tolerance = 1e-8
+density_tolerance = 1e-6
+E_total = None
+delta_E_start = None
+delta_P_start = None
 count = 0
 
+#calc_eri(pair_list, pair_cache, shells)
+
 while True:
+    P = P_a + P_b
     P_a_cart = A.T @ P_a @ A
     P_b_cart = A.T @ P_b @ A
-    P = P_a_cart + P_b_cart
+    P_cart = P_a_cart + P_b_cart
 
     J_matrix = xp.zeros((total_ao, total_ao))
     K_a = xp.zeros((total_ao, total_ao))
     K_b = xp.zeros((total_ao, total_ao))
-    eri_loop(pair_list, pair_cache, shells, P, P_a_cart, P_b_cart, J_matrix, K_a, K_b)
+    fill_matrices(shells, P_cart, P_a_cart, P_b_cart, J_matrix, K_a, K_b)
 
     J_matrix = A @ J_matrix @ A.T
     K_a = A @ K_a @ A.T
     K_b = A @ K_b @ A.T
-    P = A @ P @ A.T
 
     Fock_a = H_matrix + J_matrix - K_a
     Fock_b = H_matrix + J_matrix - K_b
     E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
     E_total_new = E_elec + E_NN
-    delta_E = xp.abs(E_total_new - E_total)
+    delta_E = xp.inf if E_total is None else xp.abs(E_total_new - E_total)
     Fock_a_prime = X_t @ Fock_a @ X
     Fock_b_prime = X_t @ Fock_b @ X
     orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
@@ -936,14 +1010,33 @@ while True:
     P_a_new, P_b_new = UHF_density(C_a_new, C_b_new, N_a, N_b)
     delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
 
-    if (delta_E < 1e-8 and delta_P < 1e-6) or (count > 100):
+    delta_P_value = float(delta_P)
+    if delta_P_start is None:
+        delta_P_start = delta_P_value
+
+    if E_total is None:
+        delta_E_value = np.inf
+        energy_progress = 0.0
+    else:
+        delta_E_value = float(delta_E)
+        if delta_E_start is None:
+            delta_E_start = delta_E_value
+        energy_progress = logarithmic_progress(delta_E_value, delta_E_start, energy_tolerance)
+
+    density_progress = logarithmic_progress(delta_P_value, delta_P_start, density_tolerance)
+
+    print(f"E: {energy_progress:.2f}%")
+    print(f"P: {density_progress:.2f}%")
+    print("Count: ", count, "\n")
+
+    if delta_E_value < energy_tolerance and delta_P_value < density_tolerance:
         P_a_cart = A.T @ P_a @ A
         P_b_cart = A.T @ P_b @ A
         P = P_a_cart + P_b_cart
         J_matrix = xp.zeros((total_ao, total_ao))
         K_a = xp.zeros((total_ao, total_ao))
         K_b = xp.zeros((total_ao, total_ao))
-        eri_loop(pair_list, pair_cache, shells, P, P_a_cart, P_b_cart, J_matrix, K_a, K_b)
+        fill_matrices(shells, P_cart, P_a_cart, P_b_cart, J_matrix, K_a, K_b)
 
         J_matrix = A @ J_matrix @ A.T
         K_a = A @ K_a @ A.T
@@ -967,6 +1060,11 @@ while True:
     P_a = P_a_new
     P_b = P_b_new
     count += 1
+
+
+print("Saving...")
+xp.savez("eval_checkpoint.npz", centers=centers, N_a=N_a, N_b=N_b, C_a=C_a, C_b=C_b, total_ao=total_ao, shells=shells, A=A)
+
 
 print("Initializing Grid...")
 padding = 10
