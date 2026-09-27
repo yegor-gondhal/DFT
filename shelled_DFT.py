@@ -708,9 +708,16 @@ def process_eri():
         dtype=np.int32,
         shape=(eri_indices.shape),
     )
+    processed_eri_quads = np.lib.format.open_memmap(
+        "compute_eri/processed_eri_quads.npy",
+        mode="w+",
+        dtype=np.int32,
+        shape=(eri_quads.shape),
+    )
 
     lex_idxs = np.lexsort((eri_quads_shapes[:, 3], eri_quads_shapes[:, 2], eri_quads_shapes[:, 1], eri_quads_shapes[:, 0]))
-    temp_processed_eri_quads = eri_quads[lex_idxs, :]
+    quad_shapes_sorted = eri_quads_shapes[lex_idxs, :]
+    processed_eri_quads[:, :] = eri_quads[lex_idxs, :]
     temp_indices = eri_indices[lex_idxs, :]
     write = 0
     for count, idxs in enumerate(temp_indices):
@@ -722,8 +729,7 @@ def process_eri():
 
     block_idxs = []
     chunked_quad_shape = []
-    target_quad_shape = temp_processed_eri_quads[0]
-    print("target_quad: ", target_quad_shape)
+    target_quad_shape = quad_shapes_sorted[0]
     end = eri_quads.shape[0]
     count = 0
     start_count = 0
@@ -732,15 +738,17 @@ def process_eri():
             block_idxs.append([start_count, count])
             chunked_quad_shape.append(target_quad_shape)
             break
-        elif (temp_processed_eri_quads[count] == target_quad_shape).all():
+        elif (quad_shapes_sorted[count] == target_quad_shape).all():
             count += 1
-        elif (temp_processed_eri_quads[count] != target_quad_shape).any():
+        elif (quad_shapes_sorted[count] != target_quad_shape).any():
             block_idxs.append([start_count, count])
             chunked_quad_shape.append(target_quad_shape)
             start_count = count
-            target_quad = temp_processed_eri_quads[count]
+            target_quad_shape = quad_shapes_sorted[count]
             count += 1
-    block_idxs = np.array(block_idxs)
+
+    block_idxs = np.asarray(block_idxs)
+    chunked_quad_shape = np.asarray(chunked_quad_shape)
     np.save("compute_eri/block_idxs.npy", block_idxs)
     np.save("compute_eri/chunked_quad_shape.npy", chunked_quad_shape)
 
@@ -752,65 +760,59 @@ def process_eri():
 
 def fill_matrices(shells, P, P_a, P_b, J_matrix, K_a, K_b):
     processed_eri_values = np.lib.format.open_memmap("compute_eri/processed_eri_values.npy", "r")
-    #eri_indices = np.lib.format.open_memmap("compute_eri/eri_indices.npy", "r")
+    processed_eri_indices = np.lib.format.open_memmap("compute_eri/processed_eri_indices.npy", "r")
+    processed_eri_quads = np.lib.format.open_memmap("compute_eri/processed_eri_quads.npy", "r")
     chunked_quad_shape = np.lib.format.open_memmap("compute_eri/chunked_quad_shape.npy", "r")
     block_idxs = np.lib.format.open_memmap("compute_eri/block_idxs.npy", "r")
 
-    for i, idxs in enumerate(block_idxs):
-        N = idxs[1] - idxs[0]
-        eri_block = xp.asarray(processed_eri_values[idxs[0]:idxs[1]])
+    for i, block_idx in enumerate(block_idxs):
+        N = block_idx[1] - block_idx[0]
+        eri_block = xp.asarray(processed_eri_values[processed_eri_indices[block_idx[0]][0]:processed_eri_indices[block_idx[1]-1][1]])
         quad_shape = chunked_quad_shape[i]
         eri_block = eri_block.reshape(N, quad_shape[0], quad_shape[1], quad_shape[2], quad_shape[3])
-        #s = []
-        #for shell_idx in quad:
-        #    s.append(slice(shells[shell_idx]["ao_start"], shells[shell_idx]["ao_stop"]))
+        quads = processed_eri_quads[block_idx[0]:block_idx[1]]
+        list_s = [[], [], [], []]
+        for quad in quads:
+            for i, shell_idx in enumerate(quad):
+                list_s[i].append(np.arange(shells[shell_idx]["ao_start"], shells[shell_idx]["ao_stop"]))
+        s = []
+        for sub_s in list_s:
+            s.append(xp.asarray(sub_s))
 
         orientations = [
-            eri_block,
-            eri_block.transpose(N, 1, 0, 2, 3),
-            eri_block.transpose(N, 0, 1, 3, 2),
-            eri_block.transpose(N, 1, 0, 3, 2),
-            eri_block.transpose(N, 2, 3, 0, 1),
-            eri_block.transpose(N, 3, 2, 0, 1),
-            eri_block.transpose(N, 2, 3, 1, 0),
-            eri_block.transpose(N, 3, 2, 1, 0),
+            ((0, 1, 2, 3), eri_block),
+            ((1, 0, 2, 3), eri_block.transpose(0, 2, 1, 3, 4)),
+            ((0, 1, 3, 2), eri_block.transpose(0, 1, 2, 4, 3)),
+            ((1, 0, 3, 2), eri_block.transpose(0, 2, 1, 4, 3)),
+            ((2, 3, 0, 1), eri_block.transpose(0, 3, 4, 1, 2)),
+            ((3, 2, 0, 1), eri_block.transpose(0, 4, 3, 1, 2)),
+            ((2, 3, 1, 0), eri_block.transpose(0, 3, 4, 2, 1)),
+            ((3, 2, 1, 0), eri_block.transpose(0, 4, 3, 2, 1)),
         ]
 
-        #for eri in orientations:
+        mask1 = (quads[:, 0] == quads[:, 1])
+        mask2 = (quads[:, 2] == quads[:, 3])
+        mask3 = ((quads[:, 0] == quads[:, 2]) & (quads[:, 1] == quads[:, 3]))
+        pow = mask1.astype(xp.int8) + mask2.astype(xp.int8) + mask3.astype(xp.int8)
+        pow = xp.asarray(pow)
+        weights = xp.power(2, pow)
 
-
-        '''
-        quad = tuple(quad.tolist())
-        seen = set()
-
-        for sub_quad, eri in orientations:
-            actual_quad = tuple(
-                quad[index]
-                for index in sub_quad
-            )
-
-            if actual_quad in seen:
-                continue
-
-            seen.add(actual_quad)
-            J_matrix[s[sub_quad[0]], s[sub_quad[1]]] += xp.einsum(
-                "abcd,cd->ab",
+        for swap_idx, eri in orientations:
+            J_matrix[s[swap_idx[0]][:, :, None], s[swap_idx[1]][:, None, :]] += xp.einsum(
+                "nabcd,ncd->nab",
                 eri,
-                P[s[sub_quad[2]], s[sub_quad[3]]],
-            )
-
-            K_a[s[sub_quad[0]], s[sub_quad[2]]] += xp.einsum(
-                "abcd,bd->ac",
+                P[s[swap_idx[2]][:, :, None], s[swap_idx[3]][:, None, :]]
+            )/weights[:, None, None]
+            K_a[s[swap_idx[0]][:, :, None], s[swap_idx[2]][:, None, :]] += xp.einsum(
+                "nabcd,nbd->nac",
                 eri,
-                P_a[s[sub_quad[1]], s[sub_quad[3]]],
-            )
-
-            K_b[s[sub_quad[0]], s[sub_quad[2]]] += xp.einsum(
-                "abcd,bd->ac",
+                P_a[s[swap_idx[1]][:, :, None], s[swap_idx[3]][:, None, :]],
+            )/weights[:, None, None]
+            K_b[s[swap_idx[0]][:, :, None], s[swap_idx[2]][:, None, :]] += xp.einsum(
+                "nabcd,nbd->nac",
                 eri,
-                P_b[s[sub_quad[1]], s[sub_quad[3]]],
-            )
-        '''
+                P_b[s[swap_idx[1]][:, :, None], s[swap_idx[3]][:, None, :]],
+            )/weights[:, None, None]
 
 def independent(shells, sphere_total_ao, C):
     C_new = xp.empty((sphere_total_ao, C.shape[1]))
@@ -1029,9 +1031,9 @@ orb_energy, C_prime = xp.linalg.eigh(F_prime)
 C = X @ C_prime
 C_a, C_b = C, C
 
-#total_spin = total_spin(unpaired_elec)
-#mult = 2*total_spin + 1
-mult = 1
+total_spin = total_spin(unpaired_elec)
+mult = 2*total_spin + 1
+#mult = 1
 N_a = (elec_count + mult - 1)/2
 N_b = (elec_count - mult + 1)/2
 N_e = N_a + N_b
