@@ -5,13 +5,12 @@ spin_file = np.load("preprocess/spin_density.npy", mmap_mode="r")
 grid = np.load("preprocess/grid.npy", mmap_mode="r")
 
 print(total_file.shape)
-
-orbitals = np.array([10])
+orbitals = np.array([4])
 
 total_file = np.sum(total_file[orbitals], axis=0)
 #spin_file = np.sum(spin_file[orbitals], axis=0)
 
-with open(f"data/density3_data.xyz", "w", buffering=1_000_000) as output_file:
+with open(f"data/density0_data.xyz", "w", buffering=1_000_000) as output_file:
     write = 0
     chunk_size = 1_000_000
     size = total_file.shape[0]

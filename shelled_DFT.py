@@ -789,6 +789,30 @@ def fill_matrices(shells, P, P_a, P_b, J_matrix, K_a, K_b):
             ((2, 3, 1, 0), eri_block.transpose(0, 3, 4, 2, 1)),
             ((3, 2, 1, 0), eri_block.transpose(0, 4, 3, 2, 1)),
         ]
+        '''
+        seen = set()
+        for swap_idx, eri in orientations:
+            for i in range(eri.shape[0]):
+                base = tuple(quads[i])
+                if base in seen:
+                    continue
+                seen.add(base)
+                J_matrix[s[swap_idx[0]][i][:, None], s[swap_idx[1]][i][None, :]] += xp.einsum(
+                    "abcd,cd->ab",
+                    eri[i, ...],
+                    P[s[swap_idx[2]][i][:, None], s[swap_idx[3]][i][None, :]]
+                )
+                K_a[s[swap_idx[0]][i][:, None], s[swap_idx[2]][i][None, :]] += xp.einsum(
+                    "abcd,bd->ac",
+                    eri[i, ...],
+                    P_a[s[swap_idx[1]][i][:, None], s[swap_idx[3]][i][None, :]],
+                )
+                K_b[s[swap_idx[0]][i][:, None], s[swap_idx[2]][i][None, :]] += xp.einsum(
+                    "abcd,bd->ac",
+                    eri[i, ...],
+                    P_b[s[swap_idx[1]][i][:, None], s[swap_idx[3]][i][None, :]],
+                )
+        '''
 
         mask1 = (quads[:, 0] == quads[:, 1])
         mask2 = (quads[:, 2] == quads[:, 3])
@@ -798,6 +822,34 @@ def fill_matrices(shells, P, P_a, P_b, J_matrix, K_a, K_b):
         weights = xp.power(2, pow)
 
         for swap_idx, eri in orientations:
+            r1 = s[swap_idx[0]][:, :, None]
+            c1 = s[swap_idx[1]][:, None, :]
+            r2 = s[swap_idx[0]][:, :, None]
+            c2 = s[swap_idx[2]][:, None, :]
+
+            J_contribution = xp.einsum(
+                "nabcd,ncd->nab",
+                eri,
+                P[s[swap_idx[2]][:, :, None], s[swap_idx[3]][:, None, :]]
+            )/weights[:, None, None]
+
+            K_a_contribution = xp.einsum(
+                "nabcd,nbd->nac",
+                eri,
+                P_a[s[swap_idx[1]][:, :, None], s[swap_idx[3]][:, None, :]],
+            )/weights[:, None, None]
+
+            K_b_contribution = xp.einsum(
+                "nabcd,nbd->nac",
+                eri,
+                P_b[s[swap_idx[1]][:, :, None], s[swap_idx[3]][:, None, :]],
+            ) / weights[:, None, None]
+
+            xp.add.at(J_matrix, (r1, c1), J_contribution)
+            xp.add.at(K_a, (r2, c2), K_a_contribution)
+            xp.add.at(K_b, (r2, c2), K_b_contribution)
+
+            '''
             J_matrix[s[swap_idx[0]][:, :, None], s[swap_idx[1]][:, None, :]] += xp.einsum(
                 "nabcd,ncd->nab",
                 eri,
@@ -813,7 +865,7 @@ def fill_matrices(shells, P, P_a, P_b, J_matrix, K_a, K_b):
                 eri,
                 P_b[s[swap_idx[1]][:, :, None], s[swap_idx[3]][:, None, :]],
             )/weights[:, None, None]
-
+            '''
 def independent(shells, sphere_total_ao, C):
     C_new = xp.empty((sphere_total_ao, C.shape[1]))
     for shell in shells:
@@ -1101,9 +1153,12 @@ while True:
 
     density_progress = logarithmic_progress(delta_P_value, delta_P_start, density_tolerance)
 
-    print(f"E: {energy_progress:.2f}%")
-    print(f"P: {density_progress:.2f}%")
-    print("Count: ", count, "\n")
+    #print(f"E: {energy_progress:.2f}%")
+    #print(f"P: {density_progress:.2f}%")
+    #print("Count: ", count, "\n")
+    print("count:", count)
+    print("delta E: ", delta_E_value)
+    print("delta P: ", delta_P_value, "\n")
 
     if delta_E_value < energy_tolerance and delta_P_value < density_tolerance:
         P_a_cart = A.T @ P_a @ A
@@ -1142,7 +1197,7 @@ xp.savez("eval_checkpoint.npz", centers=centers, N_a=N_a, N_b=N_b, C_a=C_a, C_b=
 
 
 print("Initializing Grid...")
-padding = 10
+padding = 3 #10
 grid_spacing = 0.05
 minx = float(xp.min(centers[:, 0]) - padding)
 maxx = float(xp.max(centers[:, 0]) + padding)
