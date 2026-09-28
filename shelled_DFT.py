@@ -39,9 +39,9 @@ centers = [[0, 0, 0], [3.5, 0, 0], [-3.5, 0, 0], [0, 3.5, 0], [0, -3.5, 0], [5.7
 unpaired_elec = [0]
 molecular_charge = -2
 '''
-atoms = ["28"]
+atoms = ["21"]
 centers = [[0, 0, 0]]
-unpaired_elec = [2]
+unpaired_elec = [1]
 molecular_charge = 0
 unpaired_elec = xp.asarray(unpaired_elec)
 
@@ -552,7 +552,7 @@ def total_spin(unpaired_elec):
     return xp.min(xp.abs(total_sum)) / 2
 
 
-def UHF_density(C_a, C_b, N_a, N_b):
+def init_UHF_density(C_a, C_b, N_a, N_b):
     arr_a = xp.arange(0, N_a)
     arr_b = xp.arange(0, N_b)
 
@@ -563,6 +563,23 @@ def UHF_density(C_a, C_b, N_a, N_b):
     P_b = C_b_occ @ C_b_occ.T
 
     return P_a, P_b
+
+def UHF_density(C_a, C_b, N_a, N_b, old_P_a, old_P_b, rate):
+    arr_a = xp.arange(0, N_a)
+    arr_b = xp.arange(0, N_b)
+
+    C_a_occ = C_a[:, arr_a]
+    C_b_occ = C_b[:, arr_b]
+
+    P_a = C_a_occ @ C_a_occ.T
+    P_b = C_b_occ @ C_b_occ.T
+
+    max_diff = xp.max(xp.maximum(xp.abs(P_a - old_P_a), xp.abs(P_b - old_P_b)))
+
+    P_a = rate * P_a + (1 - rate) * old_P_a
+    P_b = rate * P_b + (1 - rate) * old_P_b
+
+    return P_a, P_b, max_diff
 
 
 def logarithmic_progress(delta, initial_delta, tolerance):
@@ -1099,14 +1116,19 @@ K_a = 0
 K_b = 0
 orb_energy_a = 0
 orb_energy_b = 0
-P_a, P_b = UHF_density(C_a, C_b, N_a, N_b)
+P_a, P_b = init_UHF_density(C_a, C_b, N_a, N_b)
 energy_tolerance = 1e-8
 density_tolerance = 1e-6
-E_total = None
-delta_E_start = None
-delta_P_start = None
+#E_total = None
+#delta_E_start = None
+#delta_P_start = None
 count = 0
-
+#delta_E = xp.inf
+#delta_P = xp.inf
+rate = 1.0
+prev_diff = xp.inf
+strikes = 0
+pos_streak = 0
 
 while True:
     P = P_a + P_b
@@ -1125,9 +1147,9 @@ while True:
 
     Fock_a = H_matrix + J_matrix - K_a
     Fock_b = H_matrix + J_matrix - K_b
-    E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
-    E_total_new = E_elec + E_NN
-    delta_E = xp.inf if E_total is None else xp.abs(E_total_new - E_total)
+    #E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
+    #E_total_new = E_elec + E_NN
+    #new_delta_E = xp.inf if E_total is None else xp.abs(E_total_new - E_total)
     Fock_a_prime = X_t @ Fock_a @ X
     Fock_b_prime = X_t @ Fock_b @ X
     orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
@@ -1135,9 +1157,9 @@ while True:
 
     C_a_new = X @ C_a_prime
     C_b_new = X @ C_b_prime
-    P_a_new, P_b_new = UHF_density(C_a_new, C_b_new, N_a, N_b)
-    delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
-
+    P_a_new, P_b_new, max_diff = UHF_density(C_a_new, C_b_new, N_a, N_b, P_a, P_b, rate)
+    #new_delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
+    '''
     delta_P_value = float(delta_P)
     if delta_P_start is None:
         delta_P_start = delta_P_value
@@ -1146,21 +1168,30 @@ while True:
         delta_E_value = np.inf
         energy_progress = 0.0
     else:
-        delta_E_value = float(delta_E)
+        delta_E_value = float(new_delta_E)
         if delta_E_start is None:
             delta_E_start = delta_E_value
         energy_progress = logarithmic_progress(delta_E_value, delta_E_start, energy_tolerance)
-
-    density_progress = logarithmic_progress(delta_P_value, delta_P_start, density_tolerance)
+    '''
+    #density_progress = logarithmic_progress(delta_P_value, delta_P_start, density_tolerance)
 
     #print(f"E: {energy_progress:.2f}%")
     #print(f"P: {density_progress:.2f}%")
     #print("Count: ", count, "\n")
     print("count:", count)
-    print("delta E: ", delta_E_value)
-    print("delta P: ", delta_P_value, "\n")
+    print("LR: ", rate)
+    print("Diff: ", max_diff, "\n")
 
-    if delta_E_value < energy_tolerance and delta_P_value < density_tolerance:
+    if (max_diff - prev_diff)/prev_diff > 0:
+        if strikes == 2:
+            rate /= 1.1
+            strikes = 0
+        else:
+            strikes += 1
+
+
+
+    if max_diff < 1e-6:
         P_a_cart = A.T @ P_a @ A
         P_b_cart = A.T @ P_b @ A
         P_cart = P_a_cart + P_b_cart
@@ -1177,7 +1208,7 @@ while True:
 
         E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
         E_total_new = E_elec + E_NN
-        delta_E = xp.abs(E_total_new - E_total)
+        #delta_E = xp.abs(E_total_new - E_total)
         Fock_a_prime = X_t @ Fock_a @ X
         Fock_b_prime = X_t @ Fock_b @ X
         orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
@@ -1186,7 +1217,10 @@ while True:
         C_b = X @ C_b_prime
         break
 
-    E_total = E_total_new
+    #E_total = E_total_new
+    #delta_E = new_delta_E
+    #delta_P = new_delta_P
+    prev_diff = max_diff
     P_a = P_a_new
     P_b = P_b_new
     count += 1
