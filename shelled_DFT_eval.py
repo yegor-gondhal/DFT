@@ -25,8 +25,8 @@ A = xp.asarray(A)
 
 
 print("Initializing Grid...")
-padding = 10
-grid_spacing = 0.2 #0.05
+padding = 13
+grid_spacing = 0.1 #0.05
 minx = float(xp.min(centers[:, 0]) - padding)
 maxx = float(xp.max(centers[:, 0]) + padding)
 miny = float(xp.min(centers[:, 1]) - padding)

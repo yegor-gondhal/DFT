@@ -33,7 +33,7 @@ p_orb = xp.array(p_orb)
 d_orb = xp.array(d_orb)
 f_orb = xp.array(f_orb)
 
-'''
+
 atoms = ["28", "6", "6", "6", "6", "7", "7", "7", "7"]
 centers = [[0, 0, 0], [3.5, 0, 0], [-3.5, 0, 0], [0, 3.5, 0], [0, -3.5, 0], [5.7, 0, 0], [-5.7, 0, 0], [0, 5.7, 0], [0, -5.7, 0]]
 unpaired_elec = [0]
@@ -44,7 +44,7 @@ centers = [[0, 0, 0]]
 unpaired_elec = [1]
 molecular_charge = 0
 unpaired_elec = xp.asarray(unpaired_elec)
-
+'''
 exp = []
 coeffs = []
 cen = []
@@ -574,12 +574,10 @@ def UHF_density(C_a, C_b, N_a, N_b, old_P_a, old_P_b, rate):
     P_a = C_a_occ @ C_a_occ.T
     P_b = C_b_occ @ C_b_occ.T
 
-    max_diff = xp.max(xp.maximum(xp.abs(P_a - old_P_a), xp.abs(P_b - old_P_b)))
-
     P_a = rate * P_a + (1 - rate) * old_P_a
     P_b = rate * P_b + (1 - rate) * old_P_b
 
-    return P_a, P_b, max_diff
+    return P_a, P_b
 
 
 def logarithmic_progress(delta, initial_delta, tolerance):
@@ -1100,9 +1098,9 @@ orb_energy, C_prime = xp.linalg.eigh(F_prime)
 C = X @ C_prime
 C_a, C_b = C, C
 
-total_spin = total_spin(unpaired_elec)
-mult = 2*total_spin + 1
-#mult = 1
+#total_spin = total_spin(unpaired_elec)
+#mult = 2*total_spin + 1
+mult = 1
 N_a = (elec_count + mult - 1)/2
 N_b = (elec_count - mult + 1)/2
 N_e = N_a + N_b
@@ -1119,14 +1117,15 @@ orb_energy_b = 0
 P_a, P_b = init_UHF_density(C_a, C_b, N_a, N_b)
 energy_tolerance = 1e-8
 density_tolerance = 1e-6
-#E_total = None
-#delta_E_start = None
-#delta_P_start = None
+E_total = None
+delta_E_start = None
+delta_P_start = None
+prev_delta_E = xp.inf
+prev_delta_P = xp.inf
 count = 0
-#delta_E = xp.inf
-#delta_P = xp.inf
+delta_E = xp.inf
+delta_P = xp.inf
 rate = 1.0
-prev_diff = xp.inf
 strikes = 0
 DIIS_threshold = 1e-3
 switch_to_DIIS = False
@@ -1138,6 +1137,35 @@ DIIS_Fock_b_history = xp.zeros((DIIS_history, H_matrix.shape[0], H_matrix.shape[
 DIIS_R_a_history = xp.zeros_like(DIIS_Fock_a_history)
 DIIS_R_b_history = xp.zeros_like(DIIS_R_a_history)
 
+'''
+scf_data = np.load("scf_checkpoint.npz", allow_pickle=True)
+count=scf_data["count"]
+switch_to_DIIS=scf_data["switch_to_DIIS"]
+DIIS_P_a_history=scf_data["DIIS_P_a_history"]
+DIIS_P_b_history=scf_data["DIIS_P_b_history"]
+DIIS_R_a_history=scf_data["DIIS_R_a_history"]
+DIIS_R_b_history=scf_data["DIIS_R_b_history"]
+DIIS_Fock_a_history=scf_data["DIIS_Fock_a_history"]
+DIIS_Fock_b_history=scf_data["DIIS_Fock_b_history"]
+rate=scf_data["rate"]
+strikes=scf_data["strikes"]
+P_a=scf_data["P_a"]
+P_b=scf_data["P_b"]
+delta_E=scf_data["delta_E"]
+delta_P=scf_data["delta_P"]
+prev_delta_E=scf_data["prev_delta_E"]
+prev_delta_P=scf_data["prev_delta_P"]
+
+DIIS_P_a_history = xp.asarray(DIIS_P_a_history)
+DIIS_P_b_history = xp.asarray(DIIS_P_b_history)
+DIIS_R_a_history = xp.asarray(DIIS_R_a_history)
+DIIS_R_b_history = xp.asarray(DIIS_R_b_history)
+DIIS_Fock_a_history = xp.asarray(DIIS_Fock_a_history)
+DIIS_Fock_b_history = xp.asarray(DIIS_Fock_b_history)
+P_a = xp.asarray(P_a)
+P_b = xp.asarray(P_b)
+rate = xp.asarray(rate)
+'''
 while True:
     P = P_a + P_b
     P_a_cart = A.T @ P_a @ A
@@ -1180,9 +1208,9 @@ while True:
         Fock_b = xp.sum(DIIS_Fock_b_history * C[:, None, None], axis=0)
 
 
-    #E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
-    #E_total_new = E_elec + E_NN
-    #new_delta_E = xp.inf if E_total is None else xp.abs(E_total_new - E_total)
+    E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
+    E_total_new = E_elec + E_NN
+    delta_E = xp.inf if E_total is None else xp.abs(E_total_new - E_total)
     Fock_a_prime = X_t @ Fock_a @ X
     Fock_b_prime = X_t @ Fock_b @ X
     orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
@@ -1190,48 +1218,52 @@ while True:
 
     C_a_new = X @ C_a_prime
     C_b_new = X @ C_b_prime
-    P_a_new, P_b_new, max_diff = UHF_density(C_a_new, C_b_new, N_a, N_b, P_a, P_b, rate)
-    #new_delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
-    '''
-    delta_P_value = float(delta_P)
-    if delta_P_start is None:
-        delta_P_start = delta_P_value
+    P_a_new, P_b_new = UHF_density(C_a_new, C_b_new, N_a, N_b, P_a, P_b, rate)
+    delta_P = xp.max(xp.maximum(xp.abs(P_a_new - P_a), xp.abs(P_b_new - P_b)))
 
-    if E_total is None:
-        delta_E_value = np.inf
-        energy_progress = 0.0
-    else:
-        delta_E_value = float(new_delta_E)
-        if delta_E_start is None:
-            delta_E_start = delta_E_value
-        energy_progress = logarithmic_progress(delta_E_value, delta_E_start, energy_tolerance)
-    '''
-    #density_progress = logarithmic_progress(delta_P_value, delta_P_start, density_tolerance)
+    if count != 0 and count % 10 == 0:
+        xp.savez("scf_checkpoint.npz",
+                 count=count,
+                 switch_to_DIIS=switch_to_DIIS,
+                 DIIS_P_a_history=DIIS_P_a_history,
+                 DIIS_P_b_history=DIIS_P_b_history,
+                 DIIS_R_a_history=DIIS_R_a_history,
+                 DIIS_R_b_history=DIIS_R_b_history,
+                 DIIS_Fock_a_history=DIIS_Fock_a_history,
+                 DIIS_Fock_b_history=DIIS_Fock_b_history,
+                 rate=rate,
+                 strikes=strikes,
+                 P_a=P_a_new,
+                 P_b=P_b_new,
+                 delta_E=delta_E,
+                 delta_P=delta_P,
+                 prev_delta_E=prev_delta_E,
+                 prev_delta_P=prev_delta_P,
+                 )
 
-    #print(f"E: {energy_progress:.2f}%")
-    #print(f"P: {density_progress:.2f}%")
-    #print("Count: ", count, "\n")
     if switch_to_DIIS:
         print("count:", count)
         print("DIIS: True")
-        print("Diff: ", max_diff, "\n")
+        print("Delta E: ", delta_E)
+        print("Delta P: ", delta_P, "\n")
     else:
         print("count:", count)
         print("LR: ", rate)
-        print("Diff: ", max_diff, "\n")
+        print("Delta E: ", delta_E)
+        print("Delta P: ", delta_P, "\n")
 
-    if max_diff > prev_diff and not switch_to_DIIS:
-        if strikes == 2:
+    if (delta_E > prev_delta_E or delta_P > prev_delta_P) and not switch_to_DIIS:
+        if strikes == 3:
             rate /= 1.1
             strikes = 0
         else:
             strikes += 1
-    if max_diff < DIIS_threshold:
+    if delta_E < DIIS_threshold:
         switch_to_DIIS = True
 
 
 
-    if max_diff < 1e-6:
+    if delta_E < 1e-8 and delta_P < 1e-6:
         P_a_cart = A.T @ P_a @ A
         P_b_cart = A.T @ P_b @ A
         P_cart = P_a_cart + P_b_cart
@@ -1248,7 +1280,7 @@ while True:
 
         E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
         E_total_new = E_elec + E_NN
-        #delta_E = xp.abs(E_total_new - E_total)
+        delta_E = xp.abs(E_total_new - E_total)
         Fock_a_prime = X_t @ Fock_a @ X
         Fock_b_prime = X_t @ Fock_b @ X
         orb_energy_a, C_a_prime = xp.linalg.eigh(Fock_a_prime)
@@ -1257,10 +1289,9 @@ while True:
         C_b = X @ C_b_prime
         break
 
-    #E_total = E_total_new
-    #delta_E = new_delta_E
-    #delta_P = new_delta_P
-    prev_diff = max_diff
+    E_total = E_total_new
+    prev_delta_E = delta_E
+    prev_delta_P = delta_P
     P_a = P_a_new
     P_b = P_b_new
     count += 1
