@@ -1128,7 +1128,15 @@ count = 0
 rate = 1.0
 prev_diff = xp.inf
 strikes = 0
-pos_streak = 0
+DIIS_threshold = 1e-3
+switch_to_DIIS = False
+DIIS_history = 5
+DIIS_P_a_history = xp.zeros((DIIS_history, P_a.shape[0], P_a.shape[1]))
+DIIS_P_b_history = xp.zeros((DIIS_history, P_b.shape[0], P_b.shape[1]))
+DIIS_Fock_a_history = xp.zeros((DIIS_history, H_matrix.shape[0], H_matrix.shape[1]))
+DIIS_Fock_b_history = xp.zeros((DIIS_history, H_matrix.shape[0], H_matrix.shape[1]))
+DIIS_R_a_history = xp.zeros_like(DIIS_Fock_a_history)
+DIIS_R_b_history = xp.zeros_like(DIIS_R_a_history)
 
 while True:
     P = P_a + P_b
@@ -1147,6 +1155,31 @@ while True:
 
     Fock_a = H_matrix + J_matrix - K_a
     Fock_b = H_matrix + J_matrix - K_b
+
+    DIIS_P_a_history[1:] = DIIS_P_a_history[:-1].copy()
+    DIIS_P_a_history[0] = P_a
+    DIIS_P_b_history[1:] = DIIS_P_b_history[:-1].copy()
+    DIIS_P_b_history[0] = P_b
+    DIIS_Fock_a_history[1:] = DIIS_Fock_a_history[:-1].copy()
+    DIIS_Fock_a_history[0] = Fock_a
+    DIIS_Fock_b_history[1:] = DIIS_Fock_b_history[:-1].copy()
+    DIIS_Fock_b_history[0] = Fock_b
+    DIIS_R_a_history[1:] = DIIS_R_a_history[:-1].copy()
+    DIIS_R_a_history[0] = Fock_a @ P_a @ overlaps - overlaps @ P_a @ Fock_a
+    DIIS_R_b_history[1:] = DIIS_R_b_history[:-1].copy()
+    DIIS_R_b_history[0] = Fock_b @ P_b @ overlaps - overlaps @ P_b @ Fock_b
+
+    if switch_to_DIIS:
+        B_ij = (xp.trace(DIIS_R_a_history.transpose(0, 2, 1)[:, None, :, :]@DIIS_R_a_history[None, :, :, :], axis1=2, axis2=3)
+                + xp.trace(DIIS_R_b_history.transpose(0, 2, 1)[:, None, :, :]@DIIS_R_b_history[None, :, :, :], axis1=2, axis2=3))
+        lim = min(count + 1, DIIS_history)
+        B_ij = B_ij[:lim, :lim]
+        C = xp.linalg.solve(B_ij, xp.ones((B_ij.shape[0])))
+        C /= xp.sum(C)
+        Fock_a = xp.sum(DIIS_Fock_a_history * C[:, None, None], axis=0)
+        Fock_b = xp.sum(DIIS_Fock_b_history * C[:, None, None], axis=0)
+
+
     #E_elec = 0.5 * xp.sum(P * H_matrix + P_a * Fock_a + P_b * Fock_b)
     #E_total_new = E_elec + E_NN
     #new_delta_E = xp.inf if E_total is None else xp.abs(E_total_new - E_total)
@@ -1178,16 +1211,23 @@ while True:
     #print(f"E: {energy_progress:.2f}%")
     #print(f"P: {density_progress:.2f}%")
     #print("Count: ", count, "\n")
-    print("count:", count)
-    print("LR: ", rate)
-    print("Diff: ", max_diff, "\n")
+    if switch_to_DIIS:
+        print("count:", count)
+        print("DIIS: True")
+        print("Diff: ", max_diff, "\n")
+    else:
+        print("count:", count)
+        print("LR: ", rate)
+        print("Diff: ", max_diff, "\n")
 
-    if (max_diff - prev_diff)/prev_diff > 0:
+    if max_diff > prev_diff and not switch_to_DIIS:
         if strikes == 2:
             rate /= 1.1
             strikes = 0
         else:
             strikes += 1
+    if max_diff < DIIS_threshold:
+        switch_to_DIIS = True
 
 
 
