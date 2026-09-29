@@ -25,14 +25,16 @@ A = xp.asarray(A)
 
 
 print("Initializing Grid...")
-padding = 13
-grid_spacing = 0.1 #0.05
-minx = float(xp.min(centers[:, 0]) - padding)
-maxx = float(xp.max(centers[:, 0]) + padding)
-miny = float(xp.min(centers[:, 1]) - padding)
-maxy = float(xp.max(centers[:, 1]) + padding)
-minz = float(xp.min(centers[:, 2]) - padding)
-maxz = float(xp.max(centers[:, 2]) + padding)
+x_padding = 2
+y_padding = 2
+z_padding = 3
+grid_spacing = 0.04 #0.05
+minx = float(xp.min(centers[:, 0]) - x_padding)
+maxx = float(xp.max(centers[:, 0]) + x_padding)
+miny = float(xp.min(centers[:, 1]) - y_padding)
+maxy = float(xp.max(centers[:, 1]) + y_padding)
+minz = float(xp.min(centers[:, 2]) - z_padding)
+maxz = float(xp.max(centers[:, 2]) + z_padding)
 
 x_space = math.ceil((maxx-minx)/grid_spacing)+1
 y_space = math.ceil((maxy-miny)/grid_spacing)+1
@@ -71,12 +73,20 @@ total_file = np.lib.format.open_memmap(
     shape=(max_N, grid_len)
 )
 
+phase_file = np.lib.format.open_memmap(
+    "preprocess/phase_density.npy",
+    mode="w+",
+    dtype=np.float32,
+    shape=(max_N, grid_len)
+)
+'''
 spin_file = np.lib.format.open_memmap(
     "preprocess/spin_density.npy",
     mode="w+",
     dtype=np.float32,
     shape=(max_N, grid_len)
 )
+'''
 write = 0
 while write != grid_len:
     write_to = min(write + chunk_size, grid_len)
@@ -100,20 +110,19 @@ while write != grid_len:
 
     ao_vals = A @ ao_vals
     psi_a = C_a @ ao_vals
+
+    phase_file[:, write:write_to] = xp.asnumpy(psi_a[:int(N_a), :])
+
     psi_b = C_b @ ao_vals
     mo_density_a = xp.real(psi_a.conj() * psi_a)
     mo_density_b = xp.real(psi_b.conj() * psi_b)
 
-    occ_a = xp.zeros(max_N)
-    occ_b = xp.zeros(max_N)
-    occ_a[:int(N_a)] = 1.0
-    occ_b[:int(N_b)] = 1.0
-    occupied_density_a = occ_a[:, None] * mo_density_a
-    occupied_density_b = occ_b[:, None] * mo_density_b
+    occupied_density_a = mo_density_a[:int(N_a), :]
+    occupied_density_b = mo_density_b[:int(N_b), :]
     orbital_total_density = occupied_density_a + occupied_density_b
     orbital_spin_density = occupied_density_a - occupied_density_b
 
 
     total_file[:, write:write_to] = xp.asnumpy(orbital_total_density)
-    spin_file[:, write:write_to] = xp.asnumpy(orbital_spin_density)
+    #spin_file[:, write:write_to] = xp.asnumpy(orbital_spin_density)
     write = write_to
