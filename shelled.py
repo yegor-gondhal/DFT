@@ -34,17 +34,11 @@ d_orb = xp.array(d_orb)
 f_orb = xp.array(f_orb)
 
 
-atoms = ["28", "6", "6", "6", "6", "7", "7", "7", "7"]
-centers = [[0, 0, 0], [3.5, 0, 0], [-3.5, 0, 0], [0, 3.5, 0], [0, -3.5, 0], [5.7, 0, 0], [-5.7, 0, 0], [0, 5.7, 0], [0, -5.7, 0]]
-unpaired_elec = [0]
-molecular_charge = -2
-'''
-atoms = ["21"]
-centers = [[0, 0, 0]]
-unpaired_elec = [1]
-molecular_charge = 0
+atoms = ["8", "8"]
+centers = [[0, 0, 0], [2.29, 0, 0]]
+unpaired_elec = [2, 2]
 unpaired_elec = xp.asarray(unpaired_elec)
-'''
+molecular_charge = 0
 exp = []
 coeffs = []
 cen = []
@@ -1100,7 +1094,8 @@ C_a, C_b = C, C
 
 #total_spin = total_spin(unpaired_elec)
 #mult = 2*total_spin + 1
-mult = 1
+#print("mult: ", mult)
+mult = 3
 N_a = (elec_count + mult - 1)/2
 N_b = (elec_count - mult + 1)/2
 N_e = N_a + N_b
@@ -1298,9 +1293,9 @@ while True:
 
 
 print("Saving...")
-xp.savez("eval_checkpoint.npz", centers=centers, N_a=N_a, N_b=N_b, C_a=C_a, C_b=C_b, total_ao=total_ao, shells=shells, A=A)
+xp.savez("eval_checkpoints/triplet_O2_eval_checkpoint.npz", centers=centers, N_a=N_a, N_b=N_b, C_a=C_a, C_b=C_b, total_ao=total_ao, shells=shells, A=A)
 
-
+'''
 print("Initializing Grid...")
 padding = 3 #10
 grid_spacing = 0.05
@@ -1401,3 +1396,4 @@ while write != grid_len:
     total_file[:, write:write_to] = xp.asnumpy(orbital_total_density)
     spin_file[:, write:write_to] = xp.asnumpy(orbital_spin_density)
     write = write_to
+'''
