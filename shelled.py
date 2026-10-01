@@ -9,7 +9,7 @@ import os
 
 xp = cp
 
-data = json.load(open("data1.json"))
+data = json.load(open("ANO-RCC-MB.json"))
 
 
 def combinations(added):
@@ -33,11 +33,11 @@ p_orb = xp.array(p_orb)
 d_orb = xp.array(d_orb)
 f_orb = xp.array(f_orb)
 
-
-atoms = ["8", "8"]
-centers = [[0, 0, 0], [2.29, 0, 0]]
-unpaired_elec = [2, 2]
-unpaired_elec = xp.asarray(unpaired_elec)
+print("Running Increased DIIS History Gadolinium (III) Fluoride...")
+atoms = ["64", "9", "9", "9"]
+centers = [[0.0, 0.0, 0.0], [4.0, 0, 0], [-2.0, 3.464, 0], [-2.0, -3.464, 0]]
+#unpaired_elec = [2, 2]
+#unpaired_elec = xp.asarray(unpaired_elec)
 molecular_charge = 0
 exp = []
 coeffs = []
@@ -1095,7 +1095,7 @@ C_a, C_b = C, C
 #total_spin = total_spin(unpaired_elec)
 #mult = 2*total_spin + 1
 #print("mult: ", mult)
-mult = 3
+mult = 8
 N_a = (elec_count + mult - 1)/2
 N_b = (elec_count - mult + 1)/2
 N_e = N_a + N_b
@@ -1120,11 +1120,11 @@ prev_delta_P = xp.inf
 count = 0
 delta_E = xp.inf
 delta_P = xp.inf
-rate = 1.0
+rate = 0.4
 strikes = 0
 DIIS_threshold = 1e-3
 switch_to_DIIS = False
-DIIS_history = 5
+DIIS_history = 10
 DIIS_P_a_history = xp.zeros((DIIS_history, P_a.shape[0], P_a.shape[1]))
 DIIS_P_b_history = xp.zeros((DIIS_history, P_b.shape[0], P_b.shape[1]))
 DIIS_Fock_a_history = xp.zeros((DIIS_history, H_matrix.shape[0], H_matrix.shape[1]))
@@ -1293,7 +1293,7 @@ while True:
 
 
 print("Saving...")
-xp.savez("eval_checkpoints/triplet_O2_eval_checkpoint.npz", centers=centers, N_a=N_a, N_b=N_b, C_a=C_a, C_b=C_b, total_ao=total_ao, shells=shells, A=A)
+xp.savez("eval_checkpoints/gadolinium_3_fluoride_eval_checkpoint.npz", centers=centers, N_a=N_a, N_b=N_b, C_a=C_a, C_b=C_b, total_ao=total_ao, shells=shells, A=A)
 
 '''
 print("Initializing Grid...")

@@ -1,7 +1,7 @@
 import basis_set_exchange as bse
 import json
 
-basis = bse.get_basis("cc-pVDZ")
+basis = bse.get_basis("ANO-RCC-MB")
 
 basis_functions = {}
 
@@ -19,5 +19,5 @@ for Z, atom in basis["elements"].items():
     basis_functions[f"{Z}"] = atom_list
 
 
-with open("data1.json", "w") as file:
+with open("ANO-RCC-MB.json", "w") as file:
     json.dump(basis_functions, file, indent=4)

@@ -6,12 +6,12 @@ phase_file = np.load("preprocess/phase_density.npy", mmap_mode="r")
 grid = np.load("preprocess/grid.npy", mmap_mode="r")
 
 print(total_file.shape)
-orbitals = np.array([28])
+orbitals = np.array([33])
 
 total_file = np.sum(total_file[orbitals], axis=0)
 phase_file = np.sum(phase_file[orbitals], axis=0)
 #spin_file = np.sum(spin_file[orbitals], axis=0)
-'''
+
 with open(f"data/density_data.xyz", "w", buffering=1_000_000) as output_file:
     write = 0
     chunk_size = 1_000_000
@@ -32,12 +32,12 @@ with open(f"data/density_data.xyz", "w", buffering=1_000_000) as output_file:
         density_rgb = np.round(density_norm * 255)
         density_rgb = np.repeat(density_rgb[:, None], 3, axis=1)
         density_rgb = density_rgb.astype(np.uint8)
-        density_data = np.column_stack((grid[write:write_to][density_mask], density_rgb))
+        density_data = np.column_stack(((5*grid[write:write_to][density_mask]), density_rgb))
 
         np.savetxt(output_file, density_data, fmt=("%.7f", "%.7f", "%.7f", "%d", "%d", "%d"), delimiter=" ")
         write = write_to
 
-'''
+
 with open(f"data/phase_data.xyz", "w", buffering=1_000_000) as output_file:
     write = 0
     chunk_size = 1_000_000

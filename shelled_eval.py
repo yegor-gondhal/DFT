@@ -8,7 +8,7 @@ import math
 
 xp = cp
 
-data = np.load("eval_checkpoint.npz", allow_pickle=True)
+data = np.load("eval_checkpoints/cerium_3_fluoride_eval_checkpoint.npz", allow_pickle=True)
 centers = data["centers"]
 N_a = data["N_a"]
 N_b = data["N_b"]
@@ -25,12 +25,12 @@ A = xp.asarray(A)
 
 
 print("Initializing Grid...")
-x_padding = 2
-y_padding = 2
-z_padding = 3
-grid_spacing = 0.04 #0.05
-minx = float(xp.min(centers[:, 0]) - x_padding)
-maxx = float(xp.max(centers[:, 0]) + x_padding)
+#x_padding = 0.5
+y_padding = -0.75
+z_padding = 1.0
+grid_spacing = 0.008 #0.05
+minx = float(xp.min(centers[:, 0]))
+maxx = float(xp.max(centers[:, 0]) - 1.0)
 miny = float(xp.min(centers[:, 1]) - y_padding)
 maxy = float(xp.max(centers[:, 1]) + y_padding)
 minz = float(xp.min(centers[:, 2]) - z_padding)
@@ -58,7 +58,7 @@ grid_len = int(grid.shape[0])
 
 
 print("Evaluating Grid...")
-chunk_size = int(5e5)
+chunk_size = int(1e6)
 max_N = int(max(N_a, N_b))
 print("Orbitals: ", max_N)
 C_a = C_a.astype(xp.float32)[:, :max_N].T
@@ -89,6 +89,7 @@ spin_file = np.lib.format.open_memmap(
 '''
 write = 0
 while write != grid_len:
+    print(100*write/grid_len)
     write_to = min(write + chunk_size, grid_len)
     ao_vals = xp.empty((total_ao, write_to-write))
     for shell in shells:
@@ -117,8 +118,12 @@ while write != grid_len:
     mo_density_a = xp.real(psi_a.conj() * psi_a)
     mo_density_b = xp.real(psi_b.conj() * psi_b)
 
-    occupied_density_a = mo_density_a[:int(N_a), :]
-    occupied_density_b = mo_density_b[:int(N_b), :]
+    occ_a = xp.zeros(max_N)
+    occ_b = xp.zeros(max_N)
+    occ_a[:int(N_a)] = 1.0
+    occ_b[:int(N_b)] = 1.0
+    occupied_density_a = occ_a[:, None] * mo_density_a
+    occupied_density_b = occ_b[:, None] * mo_density_b
     orbital_total_density = occupied_density_a + occupied_density_b
     orbital_spin_density = occupied_density_a - occupied_density_b
 

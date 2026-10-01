@@ -8,7 +8,7 @@ import math
 
 xp = cp
 
-data = json.load(open("data1.json"))
+data = json.load(open("cc-pVDZ.json"))
 
 def combinations(added):
     total = []
